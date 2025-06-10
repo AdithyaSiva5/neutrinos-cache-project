@@ -1,15 +1,16 @@
 'use client';
 
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef, useMemo, useState } from 'react';
 import * as d3 from 'd3';
 import { debounce } from 'lodash';
 
 export default function ConfigTree({ config, metrics }) {
   const svgRef = useRef();
+  const containerRef = useRef();
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [hoveredNode, setHoveredNode] = useState(null);
   const memoizedConfig = useMemo(() => config, [JSON.stringify(config)]);
   const memoizedMetrics = useMemo(() => metrics, [JSON.stringify(metrics)]);
-
-  console.log('ConfigTree props:', { config, metrics });
 
   // Function to convert flat config object to hierarchical structure
   const convertToHierarchy = (configObj) => {
@@ -17,27 +18,34 @@ export default function ConfigTree({ config, metrics }) {
       return { name: 'root', children: [] };
     }
 
-    const root = { name: 'root', children: [] };
+    const root = { name: 'Config Root', children: [], type: 'root' };
     
-    const processNode = (node, data) => {
+    const processNode = (node, data, depth = 0) => {
       if (!data || typeof data !== 'object') return;
       
       Object.keys(data).forEach(key => {
         if (key === 'value') {
-          // This is a leaf node value
           node.value = data[key];
+          node.type = 'leaf';
         } else {
-          // This is a child node
-          const childNode = { name: key, children: [] };
+          const childNode = { 
+            name: key, 
+            children: [], 
+            type: 'branch',
+            depth: depth + 1,
+            id: `${node.id || 'root'}-${key}`
+          };
           node.children.push(childNode);
           
           if (data[key] && typeof data[key] === 'object') {
             if (data[key].value !== undefined) {
               childNode.value = data[key].value;
+              childNode.type = 'leaf';
             }
-            processNode(childNode, data[key]);
+            processNode(childNode, data[key], depth + 1);
           } else {
             childNode.value = data[key];
+            childNode.type = 'leaf';
           }
         }
       });
@@ -55,33 +63,95 @@ export default function ConfigTree({ config, metrics }) {
           return;
         }
 
-        console.log('Rendering tree with config:', memoizedConfig);
+        const container = containerRef.current;
+        const rect = container.getBoundingClientRect();
+        const width = Math.max(800, rect.width);
+        const height = 600;
 
         const svg = d3
           .select(svgRef.current)
-          .attr('width', '100%')
-          .attr('height', 500)
-          .attr('viewBox', '0 0 900 500')
-          .style('overflow', 'visible');
+          .attr('width', width)
+          .attr('height', height)
+          .attr('viewBox', `0 0 ${width} ${height}`)
+          .style('background', 'transparent');
 
         svg.selectAll('*').remove();
 
+        // Create gradient definitions
+        const defs = svg.append('defs');
+        
+        // Gradient for cached nodes
+        const cachedGradient = defs.append('radialGradient')
+          .attr('id', 'cached-gradient')
+          .attr('cx', '30%')
+          .attr('cy', '30%');
+        cachedGradient.append('stop').attr('offset', '0%').attr('stop-color', '#60A5FA');
+        cachedGradient.append('stop').attr('offset', '100%').attr('stop-color', '#1D4ED8');
+
+        // Gradient for uncached nodes
+        const uncachedGradient = defs.append('radialGradient')
+          .attr('id', 'uncached-gradient')
+          .attr('cx', '30%')
+          .attr('cy', '30%');
+        uncachedGradient.append('stop').attr('offset', '0%').attr('stop-color', '#9CA3AF');
+        uncachedGradient.append('stop').attr('offset', '100%').attr('stop-color', '#4B5563');
+
+        // Gradient for root node
+        const rootGradient = defs.append('radialGradient')
+          .attr('id', 'root-gradient')
+          .attr('cx', '30%')
+          .attr('cy', '30%');
+        rootGradient.append('stop').attr('offset', '0%').attr('stop-color', '#F59E0B');
+        rootGradient.append('stop').attr('offset', '100%').attr('stop-color', '#D97706');
+
+        // Glow filter
+        const filter = defs.append('filter')
+          .attr('id', 'glow')
+          .attr('x', '-50%')
+          .attr('y', '-50%')
+          .attr('width', '200%')
+          .attr('height', '200%');
+        
+        filter.append('feGaussianBlur')
+          .attr('stdDeviation', '3')
+          .attr('result', 'coloredBlur');
+        
+        const feMerge = filter.append('feMerge');
+        feMerge.append('feMergeNode').attr('in', 'coloredBlur');
+        feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
+
         // Convert config to hierarchical structure
         const hierarchicalData = convertToHierarchy(memoizedConfig);
-        console.log('Hierarchical data:', hierarchicalData);
-
         const root = d3.hierarchy(hierarchicalData);
-        console.log('D3 hierarchy root:', root);
 
-        const treeLayout = d3.tree().size([700, 400]);
+        const treeLayout = d3.tree()
+          .size([width - 200, height - 100])
+          .separation((a, b) => (a.parent === b.parent ? 1 : 2) / a.depth);
+
         treeLayout(root);
-
-        console.log('Root node position:', { x: root.x, y: root.y });
-        console.log('All nodes:', root.descendants().map(d => ({ name: d.data.name, x: d.x, y: d.y, value: d.data.value })));
 
         const g = svg.append('g').attr('transform', 'translate(100, 50)');
 
-        // Draw links (edges between nodes)
+        // Create animated background particles
+        const particles = g.append('g').attr('class', 'particles');
+        for (let i = 0; i < 20; i++) {
+          particles.append('circle')
+            .attr('r', Math.random() * 2 + 1)
+            .attr('cx', Math.random() * width)
+            .attr('cy', Math.random() * height)
+            .attr('fill', '#3B82F6')
+            .attr('opacity', 0.1)
+            .transition()
+            .duration(3000 + Math.random() * 2000)
+            .ease(d3.easeLinear)
+            .attr('cx', Math.random() * width)
+            .attr('cy', Math.random() * height)
+            .on('end', function() {
+              d3.select(this).attr('cx', Math.random() * width).attr('cy', Math.random() * height);
+            });
+        }
+
+        // Draw links with curves and animations
         const links = g.selectAll('.link')
           .data(root.links())
           .enter()
@@ -90,50 +160,46 @@ export default function ConfigTree({ config, metrics }) {
           .attr('d', d3.linkVertical()
             .x(d => d.x)
             .y(d => d.y)
+            
           )
           .attr('fill', 'none')
-          .attr('stroke', '#999')
-          .attr('stroke-width', 2);
+          .attr('stroke', 'url(#link-gradient)')
+          .attr('stroke-width', 0)
+          .attr('opacity', 0);
 
-        console.log('Links rendered:', root.links().length);
+        // Link gradient
+        const linkGradient = defs.append('linearGradient')
+          .attr('id', 'link-gradient')
+          .attr('gradientUnits', 'userSpaceOnUse');
+        linkGradient.append('stop').attr('offset', '0%').attr('stop-color', '#60A5FA');
+        linkGradient.append('stop').attr('offset', '100%').attr('stop-color', '#3B82F6');
 
-        // Draw nodes
+        // Animate links
+        links.transition()
+          .duration(800)
+          .delay((d, i) => i * 100)
+          .attr('stroke-width', 3)
+          .attr('opacity', 0.8);
+
+        // Draw nodes with enhanced styling
         const nodes = g
           .selectAll('.node')
           .data(root.descendants())
           .enter()
           .append('g')
           .attr('class', 'node')
-          .attr('transform', (d) => {
-            console.log(`Node ${d.data.name}: x=${d.x}, y=${d.y}`);
-            return `translate(${d.x},${d.y})`;
-          });
+          .attr('transform', d => `translate(${d.x},${d.y})`)
+          .style('cursor', 'pointer')
+          .style('opacity', 0);
 
-        // Add circles for nodes
+        // Add node circles with gradients and effects
         nodes
           .append('circle')
-          .attr('r', 10)
-          .attr('class', (d) => {
-            // Build the path for this node
-            const nodePath = d.ancestors()
-              .reverse()
-              .slice(1) // Remove root
-              .map(n => n.data.name)
-              .join('/');
-            const fullPath = nodePath ? `/${nodePath}` : '/';
-            
-            console.log('Node path for styling:', fullPath);
-            
-            const metric = memoizedMetrics.find(m => m.path === fullPath);
-            const isCached = !!metric;
-            
-            console.log(`Node ${fullPath} is cached:`, isCached);
-            
-            return isCached
-              ? 'transition-smooth cursor-pointer'
-              : 'transition-smooth cursor-pointer';
-          })
+          .attr('class', 'node-circle')
+          .attr('r', 0)
           .attr('fill', (d) => {
+            if (d.data.type === 'root') return 'url(#root-gradient)';
+            
             const nodePath = d.ancestors()
               .reverse()
               .slice(1)
@@ -141,62 +207,196 @@ export default function ConfigTree({ config, metrics }) {
               .join('/');
             const fullPath = nodePath ? `/${nodePath}` : '/';
             const metric = memoizedMetrics.find(m => m.path === fullPath);
-            return metric ? '#3B82F6' : '#6B7280'; // Blue for cached, gray for uncached
+            
+            return metric ? 'url(#cached-gradient)' : 'url(#uncached-gradient)';
           })
           .attr('stroke', '#fff')
-          .attr('stroke-width', 2)
+          .attr('stroke-width', 3)
+          .attr('filter', 'url(#glow)')
+          .on('mouseenter', function(event, d) {
+            setHoveredNode(d);
+            d3.select(this)
+              .transition()
+              .duration(200)
+              .attr('r', d.data.type === 'root' ? 25 : 18)
+              .attr('stroke-width', 4);
+          })
+          .on('mouseleave', function(event, d) {
+            setHoveredNode(null);
+            d3.select(this)
+              .transition()
+              .duration(200)
+              .attr('r', d.data.type === 'root' ? 20 : (d.data.type === 'leaf' ? 12 : 15))
+              .attr('stroke-width', 3);
+          })
           .on('click', (event, d) => {
-            const nodePath = d.ancestors()
-              .reverse()
-              .slice(1)
-              .map(n => n.data.name)
-              .join('/');
-            const fullPath = nodePath ? `/${nodePath}` : '/';
-            const value = d.data.value || 'N/A';
-            alert(`Node: ${fullPath}\nValue: ${value}`);
+            setSelectedNode(d);
+            // Add ripple effect
+            const ripple = d3.select(event.target.parentNode)
+              .append('circle')
+              .attr('class', 'ripple')
+              .attr('r', 0)
+              .attr('fill', 'none')
+              .attr('stroke', '#3B82F6')
+              .attr('stroke-width', 2)
+              .attr('opacity', 0.8);
+            
+            ripple.transition()
+              .duration(600)
+              .attr('r', 40)
+              .attr('opacity', 0)
+              .on('end', function() {
+                d3.select(this).remove();
+              });
           });
 
-        // Add text labels
+        // Add floating icons for different node types
         nodes
           .append('text')
-          .attr('dy', (d) => (d.children ? -15 : 25))
+          .attr('class', 'node-icon')
           .attr('text-anchor', 'middle')
-          .style('font-size', '12px')
+          .attr('dy', 6)
+          .style('font-size', d => d.data.type === 'root' ? '16px' : '12px')
+          .style('fill', '#fff')
           .style('font-weight', 'bold')
-          .text((d) => d.data.name)
-          .attr('fill', () => {
-            // Check if dark mode is active
-            return document.documentElement.classList.contains('dark') ? '#ffffff' : '#000000';
+          .style('pointer-events', 'none')
+          .text(d => {
+            if (d.data.type === 'root') return '⚡';
+            if (d.data.type === 'leaf') return '💎';
+            return '🔧';
           });
 
-        // Add value labels for leaf nodes
+        // Add text labels with better positioning and styling
+        nodes
+          .append('text')
+          .attr('class', 'node-label')
+          .attr('dy', d => d.data.type === 'root' ? -35 : (d.children ? -25 : 30))
+          .attr('text-anchor', 'middle')
+          .style('font-size', d => d.data.type === 'root' ? '16px' : '14px')
+          .style('font-weight', d => d.data.type === 'root' ? 'bold' : '600')
+          .style('fill', () => document.documentElement.classList.contains('dark') ? '#F3F4F6' : '#1F2937')
+          .style('text-shadow', '0 1px 3px rgba(0,0,0,0.3)')
+          .style('pointer-events', 'none')
+          .text(d => d.data.name);
+
+        // Add value labels with enhanced styling
+        nodes
+          .filter(d => d.data.value !== undefined)
+          .append('rect')
+          .attr('class', 'value-bg')
+          .attr('x', -25)
+          .attr('y', 40)
+          .attr('width', 50)
+          .attr('height', 20)
+          .attr('rx', 10)
+          .attr('fill', 'rgba(59, 130, 246, 0.9)')
+          .attr('stroke', '#3B82F6')
+          .attr('stroke-width', 1);
+
         nodes
           .filter(d => d.data.value !== undefined)
           .append('text')
-          .attr('dy', 40)
+          .attr('class', 'value-label')
+          .attr('dy', 53)
           .attr('text-anchor', 'middle')
           .style('font-size', '10px')
-          .style('fill', '#666')
-          .text((d) => `${d.data.value}`);
+          .style('fill', '#fff')
+          .style('font-weight', '600')
+          .style('pointer-events', 'none')
+          .text(d => String(d.data.value).substring(0, 8));
 
-        console.log('Tree rendering complete');
+        // Animate nodes appearance
+        nodes.transition()
+          .duration(600)
+          .delay((d, i) => i * 100)
+          .style('opacity', 1);
+
+        nodes.select('.node-circle')
+          .transition()
+          .duration(600)
+          .delay((d, i) => i * 100)
+          .attr('r', d => d.data.type === 'root' ? 20 : (d.data.type === 'leaf' ? 12 : 15));
+
+        console.log('Stunning tree rendering complete! ✨');
       }, 300),
     [memoizedConfig, memoizedMetrics]
   );
 
   useEffect(() => {
     renderTree();
-    return () => renderTree.cancel();
+    const handleResize = debounce(renderTree, 300);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      renderTree.cancel();
+      window.removeEventListener('resize', handleResize);
+    };
   }, [memoizedConfig, memoizedMetrics, renderTree]);
 
   return (
-    <div className="overflow-x-auto">
-      <svg ref={svgRef} className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900" />
-      {Object.keys(memoizedConfig).length === 0 && (
-        <div className="text-center text-gray-500 dark:text-gray-400 py-8">
-          No configuration data available
+    <div className="relative w-full h-full" ref={containerRef}>
+      {/* Modern glassmorphism container */}
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-blue-50/50 to-purple-50/50 dark:from-gray-900/50 dark:to-gray-800/50 backdrop-blur-lg border border-white/20 dark:border-gray-700/30 shadow-2xl">
+        
+        {/* Animated background gradient */}
+        <div className="absolute inset-0 bg-gradient-to-r from-blue-400/10 via-purple-400/10 to-pink-400/10 animate-pulse"></div>
+        
+        {/* SVG Container */}
+        <div className="relative p-6">
+          <svg 
+            ref={svgRef} 
+            className="w-full drop-shadow-lg"
+            style={{ minHeight: '600px' }}
+          />
         </div>
-      )}
+
+        {/* Floating info panel */}
+        {(hoveredNode || selectedNode) && (
+          <div className="absolute top-4 right-4 p-4 bg-white/90 dark:bg-gray-800/90 backdrop-blur-md rounded-xl border border-white/20 dark:border-gray-700/30 shadow-xl min-w-[200px] transition-all duration-300 transform">
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <span className="text-2xl">
+                  {(hoveredNode || selectedNode).data.type === 'root' ? '⚡' : 
+                   (hoveredNode || selectedNode).data.type === 'leaf' ? '💎' : '🔧'}
+                </span>
+                <h3 className="font-bold text-gray-800 dark:text-gray-100">
+                  {(hoveredNode || selectedNode).data.name}
+                </h3>
+              </div>
+              
+              {(hoveredNode || selectedNode).data.value && (
+                <div className="bg-gradient-to-r from-blue-500 to-purple-500 text-white px-3 py-1 rounded-full text-sm font-medium">
+                  Value: {(hoveredNode || selectedNode).data.value}
+                </div>
+              )}
+              
+              <div className="text-sm text-gray-600 dark:text-gray-300">
+                Type: <span className="font-medium capitalize">{(hoveredNode || selectedNode).data.type}</span>
+              </div>
+              
+              {(hoveredNode || selectedNode).children && (
+                <div className="text-sm text-gray-600 dark:text-gray-300">
+                  Children: <span className="font-medium">{(hoveredNode || selectedNode).children.length}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Empty state with style */}
+        {Object.keys(memoizedConfig).length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="text-center space-y-4 p-8">
+              <div className="text-6xl opacity-50">🌟</div>
+              <h3 className="text-xl font-bold text-gray-600 dark:text-gray-300">
+                No Configuration Data
+              </h3>
+              <p className="text-gray-500 dark:text-gray-400">
+                Add some config data to see the magic happen!
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
