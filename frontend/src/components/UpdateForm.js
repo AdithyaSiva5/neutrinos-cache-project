@@ -1,0 +1,77 @@
+'use client';
+
+import { useState } from 'react';
+import { toast } from 'react-toastify';
+import { updateConfig } from '@/lib/api';
+
+export default function UpdateForm({ tenantId, configId }) {
+  const [path, setPath] = useState('');
+  const [value, setValue] = useState('');
+  const [dependencies, setDependencies] = useState('');
+
+  const handleSubmit = async e => {
+    e.preventDefault();
+    try {
+      await updateConfig(tenantId, configId, {
+        path,
+        value,
+        dependencies: dependencies.split(',').map(d => d.trim()).filter(d => d),
+      });
+      toast.success(`Updated ${path}`);
+      setPath('');
+      setValue('');
+      setDependencies('');
+    } catch (err) {
+      toast.error(`Failed to update: ${err.message}`);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label htmlFor="path" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+          Node Path (e.g., /settings/theme/color)
+        </label>
+        <input
+          id="path"
+          value={path}
+          onChange={e => setPath(e.target.value)}
+          placeholder="/settings/theme/color"
+          className="mt-1 p-2 w-full border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 transition-smooth"
+          required
+        />
+      </div>
+      <div>
+        <label htmlFor="value" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+          Value (e.g., red)
+        </label>
+        <input
+          id="value"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          placeholder="red"
+          className="mt-1 p-2 w-full border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 transition-smooth"
+          required
+        />
+      </div>
+      <div>
+        <label htmlFor="dependencies" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+          Dependencies (comma-separated, e.g., /settings/theme/color/dark)
+        </label>
+        <input
+          id="dependencies"
+          value={dependencies}
+          onChange={e => setDependencies(e.target.value)}
+          placeholder="/settings/theme/color/dark"
+          className="mt-1 p-2 w-full border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 transition-smooth"
+        />
+      </div>
+      <button
+        type="submit"
+        className="p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700 transition-smooth"
+      >
+        Update Node
+      </button>
+    </form>
+  );
+}
