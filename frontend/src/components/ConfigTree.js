@@ -17,8 +17,8 @@ export default function ConfigTree({ config, metrics }) {
         const svg = d3
           .select(svgRef.current)
           .attr('width', '100%')
-          .attr('height', 600)
-          .attr('viewBox', '0 0 800 600')
+          .attr('height', 400) // Reduced height to fit better
+          .attr('viewBox', '0 0 800 400')
           .style('overflow', 'visible');
 
         svg.selectAll('*').remove();
@@ -27,9 +27,9 @@ export default function ConfigTree({ config, metrics }) {
         const root = d3.hierarchy(memoizedConfig, (d) =>
           Object.keys(d)
             .map((key) => ({ name: key, value: d[key]?.value, ...d[key] }))
-            .filter((_, i, arr) => i < maxDepth)
+            .filter((_, i) => i < maxDepth)
         );
-        const treeLayout = d3.tree().size([700, 500]);
+        const treeLayout = d3.tree().size([700, 300]);
         treeLayout(root);
 
         svg
@@ -62,7 +62,9 @@ export default function ConfigTree({ config, metrics }) {
               .map((n) => n.data.name)
               .join('/');
             const metric = memoizedMetrics.find((m) => m.path === `/${nodePath}`);
-            return metric ? 'node-cached transition-smooth cursor-pointer' : 'node-uncached transition-smooth cursor-pointer';
+            return metric
+              ? 'node-cached transition-smooth cursor-pointer fill-blue-500'
+              : 'node-uncached transition-smooth cursor-pointer fill-gray-400';
           })
           .on('click', (event, d) => {
             const nodePath = d
@@ -87,7 +89,11 @@ export default function ConfigTree({ config, metrics }) {
   useEffect(() => {
     renderTree();
     return () => renderTree.cancel();
-  }, [memoizedConfig, memoizedMetrics]);
+  }, [memoizedConfig, memoizedMetrics, renderTree]);
 
-  return <svg ref={svgRef} className="w-full border rounded-lg shadow-sm" />;
+  return (
+    <div className="overflow-x-auto">
+      <svg ref={svgRef} className="w-full border rounded-lg shadow-sm" />
+    </div>
+  );
 }

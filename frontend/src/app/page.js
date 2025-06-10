@@ -23,7 +23,11 @@ export default function Dashboard() {
   const tenantId = 'T1';
   const configId = 'C1';
 
-  const updateMetrics = useCallback(() => {
+  const updateConfigAndMetrics = useCallback(() => {
+    fetchConfig(tenantId, configId)
+      .then((data) => setConfig(data.config))
+      .catch((err) => toast.error(`Failed to fetch config: ${err.message}`));
+
     fetchMetrics(tenantId, configId)
       .then((data) => setMetrics(data.metrics))
       .catch((err) => toast.error(`Failed to fetch metrics: ${err.message}`));
@@ -33,30 +37,30 @@ export default function Dashboard() {
     throttle((updates) => {
       if (Array.isArray(updates)) {
         updates.forEach(({ path, action, version }) => {
-          setEvents((prev) => [
-            ...prev,
-            { path, action, version, time: new Date().toLocaleTimeString() },
-          ].slice(-10));
+          setEvents((prev) =>
+            [
+              ...prev,
+              { path, action, version, time: new Date().toLocaleTimeString() },
+            ].slice(-10)
+          );
           toast.info(`Node ${path} ${action} (v${version})`);
         });
       } else {
-        setEvents((prev) => [
-          ...prev,
-          { path: updates.path, action: updates.action, version: updates.version, time: new Date().toLocaleTimeString() },
-        ].slice(-10));
+        setEvents((prev) =>
+          [
+            ...prev,
+            { path: updates.path, action: updates.action, version: updates.version, time: new Date().toLocaleTimeString() },
+          ].slice(-10)
+        );
         toast.info(`Node ${updates.path} ${updates.action} (v${updates.version})`);
       }
-      updateMetrics();
+      updateConfigAndMetrics();
     }, 1000),
-    [updateMetrics]
+    [updateConfigAndMetrics]
   );
 
   useEffect(() => {
-    fetchConfig(tenantId, configId)
-      .then((data) => setConfig(data.config))
-      .catch((err) => toast.error(`Failed to fetch config: ${err.message}`));
-
-    updateMetrics();
+    updateConfigAndMetrics();
 
     const socket = useSocket();
     socket.emit('join', { tenantId, configId });
@@ -66,7 +70,7 @@ export default function Dashboard() {
       socket.off('update', handleSocketUpdate);
       disconnectSocket();
     };
-  }, [tenantId, configId, updateMetrics, handleSocketUpdate]);
+  }, [tenantId, configId, handleSocketUpdate]);
 
   return (
     <div>

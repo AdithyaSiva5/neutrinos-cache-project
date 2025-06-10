@@ -9,17 +9,22 @@ export default function UpdateForm({ tenantId, configId }) {
   const [value, setValue] = useState('');
   const [dependencies, setDependencies] = useState('');
 
-  const handleSubmit = async e => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!path.startsWith('/')) {
       toast.error('Path must start with /');
+      return;
+    }
+    const deps = dependencies.split(',').map((d) => d.trim()).filter((d) => d);
+    if (deps.some((dep) => !dep.startsWith('/'))) {
+      toast.error('All dependencies must start with /');
       return;
     }
     try {
       await updateConfig(tenantId, configId, {
         path,
         value,
-        dependencies: dependencies.split(',').map(d => d.trim()).filter(d => d),
+        dependencies: deps,
       });
       toast.success(`Updated ${path}`);
       setPath('');
@@ -39,7 +44,7 @@ export default function UpdateForm({ tenantId, configId }) {
         <input
           id="path"
           value={path}
-          onChange={e => setPath(e.target.value)}
+          onChange={(e) => setPath(e.target.value)}
           placeholder="/settings/theme/color"
           className="mt-1 p-2 w-full border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 transition-smooth"
           required
@@ -52,7 +57,7 @@ export default function UpdateForm({ tenantId, configId }) {
         <input
           id="value"
           value={value}
-          onChange={e => setValue(e.target.value)}
+          onChange={(e) => setValue(e.target.value)}
           placeholder="red"
           className="mt-1 p-2 w-full border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 transition-smooth"
           required
@@ -60,13 +65,13 @@ export default function UpdateForm({ tenantId, configId }) {
       </div>
       <div>
         <label htmlFor="dependencies" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-          Dependencies (comma-separated, e.g., /settings/theme/color/dark)
+          Dependencies (comma-separated, e.g., /settings/theme/dark)
         </label>
         <input
           id="dependencies"
           value={dependencies}
-          onChange={e => setDependencies(e.target.value)}
-          placeholder="/settings/theme/color/dark"
+          onChange={(e) => setDependencies(e.target.value)}
+          placeholder="/settings/theme/dark"
           className="mt-1 p-2 w-full border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 transition-smooth"
         />
       </div>
