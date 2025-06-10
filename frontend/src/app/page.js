@@ -1,4 +1,3 @@
-// frontend\src\app\page.js
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
@@ -31,19 +30,28 @@ export default function Dashboard() {
   }, [tenantId, configId]);
 
   const handleSocketUpdate = useCallback(
-    throttle(({ path, action, version }) => {
-      setEvents((prev) => [
-        ...prev,
-        { path, action, version, time: new Date().toLocaleTimeString() },
-      ].slice(-10));
+    throttle((updates) => {
+      if (Array.isArray(updates)) {
+        updates.forEach(({ path, action, version }) => {
+          setEvents((prev) => [
+            ...prev,
+            { path, action, version, time: new Date().toLocaleTimeString() },
+          ].slice(-10));
+          toast.info(`Node ${path} ${action} (v${version})`);
+        });
+      } else {
+        setEvents((prev) => [
+          ...prev,
+          { path: updates.path, action: updates.action, version: updates.version, time: new Date().toLocaleTimeString() },
+        ].slice(-10));
+        toast.info(`Node ${updates.path} ${updates.action} (v${updates.version})`);
+      }
       updateMetrics();
-      toast.info(`Node ${path} ${action} (v${version})`);
     }, 1000),
     [updateMetrics]
   );
 
   useEffect(() => {
-    // Fetch initial config
     fetchConfig(tenantId, configId)
       .then((data) => setConfig(data.config))
       .catch((err) => toast.error(`Failed to fetch config: ${err.message}`));

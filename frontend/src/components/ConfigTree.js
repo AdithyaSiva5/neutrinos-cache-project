@@ -1,16 +1,14 @@
-// frontend\src\components\ConfigTree.js
+'use client';
+
 import { useEffect, useRef, useMemo } from 'react';
 import * as d3 from 'd3';
-import { debounce } from 'lodash'; // Install lodash if needed
+import { debounce } from 'lodash';
 
 export default function ConfigTree({ config, metrics }) {
   const svgRef = useRef();
-
-  // Memoize config and metrics to prevent unnecessary re-renders
   const memoizedConfig = useMemo(() => config, [JSON.stringify(config)]);
   const memoizedMetrics = useMemo(() => metrics, [JSON.stringify(metrics)]);
 
-  // Debounced render function
   const renderTree = useMemo(
     () =>
       debounce(() => {
@@ -25,8 +23,11 @@ export default function ConfigTree({ config, metrics }) {
 
         svg.selectAll('*').remove();
 
+        const maxDepth = 5;
         const root = d3.hierarchy(memoizedConfig, (d) =>
-          Object.keys(d).map((key) => ({ name: key, ...d[key] }))
+          Object.keys(d)
+            .map((key) => ({ name: key, value: d[key]?.value, ...d[key] }))
+            .filter((_, i, arr) => i < maxDepth)
         );
         const treeLayout = d3.tree().size([700, 500]);
         treeLayout(root);
@@ -61,7 +62,16 @@ export default function ConfigTree({ config, metrics }) {
               .map((n) => n.data.name)
               .join('/');
             const metric = memoizedMetrics.find((m) => m.path === `/${nodePath}`);
-            return metric ? 'node-cached transition-smooth' : 'node-uncached transition-smooth';
+            return metric ? 'node-cached transition-smooth cursor-pointer' : 'node-uncached transition-smooth cursor-pointer';
+          })
+          .on('click', (event, d) => {
+            const nodePath = d
+              .ancestors()
+              .reverse()
+              .slice(1)
+              .map((n) => n.data.name)
+              .join('/');
+            alert(`Node: /${nodePath}\nValue: ${d.data.value || 'N/A'}`);
           });
 
         nodes
@@ -76,8 +86,8 @@ export default function ConfigTree({ config, metrics }) {
 
   useEffect(() => {
     renderTree();
-    return () => renderTree.cancel(); // Cleanup debounce on unmount
-  }, [memoizedConfig, memoizedMetrics, renderTree]);
+    return () => renderTree.cancel();
+  }, [memoizedConfig, memoizedMetrics]);
 
   return <svg ref={svgRef} className="w-full border rounded-lg shadow-sm" />;
 }

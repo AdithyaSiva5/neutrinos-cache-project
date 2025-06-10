@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@types/socket.io-client": "^1.4.36",
     "axios": "^1.7.7",
     "chart.js": "^4.4.6",
     "d3": "^7.9.0",
@@ -19,7 +20,7 @@
     "react-dom": "^18.3.1",
     "react-feather": "^2.0.10",
     "react-toastify": "^11.0.5",
-    "socket.io-client": "^4.8.0"
+    "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.20",

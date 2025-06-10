@@ -4,93 +4,96 @@ const Redis = require('ioredis');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const server = http.createServer(app);
 
-// Configure CORS for Express
-// app.use(cors({
-//   origin: ['http://localhost:3000', 'http://localhost:3001', 'http://192.168.0.122:3001'],
-//   methods: ['GET', 'POST', 'OPTIONS'], // Include OPTIONS for preflight requests
-//   allowedHeaders: ['Content-Type', 'Authorization'],
-//   credentials: true // If your app uses credentials (e.g., cookies)
-// }));
-
-// // Configure CORS for Socket.IO
-// const io = socketIo(server, {
-//   cors: {
-//     origin: ['http://localhost:3000', 'http://localhost:3001', 'http://192.168.0.122:3001'],
-//     methods: ['GET', 'POST'],
-//     credentials: true
-//   },
-// });
-
 app.use(cors({
-  origin: '*',
+  origin: ['http://localhost:3000', 'http://localhost:3001'],
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  credentials: true,
 }));
 
 const io = socketIo(server, {
   cors: {
-    origin: '*',
+    origin: ['http://localhost:3000', 'http://localhost:3001'],
     methods: ['GET', 'POST'],
-    credentials: true
+    credentials: true,
   },
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
+
 app.use(express.json());
 
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each tenant to 100 requests
+  keyGenerator: (req) => req.params.tenantId,
+});
 
+app.use('/api/:tenantId/:configId', limiter);
 
-// PostgreSQL connection
 const pool = new Pool({
   user: 'postgres',
   host: 'localhost',
   database: 'configs',
-  password: 'GPY0VDtPc2zkWrF', 
+  password: 'GPY0VDtPc2zkWrF', // Replace with secure password
   port: 5432,
 });
 
-// Redis connection (Docker)
-const redis = new Redis({ host: 'localhost', port: 6379 });
+const redis = new Redis({ host: process.env.REDIS_HOST || 'localhost', port: 6379 });
 
-// Cache a node
+let updateBatch = [];
+
+setInterval(() => {
+  if (updateBatch.length > 0) {
+    const channel = 'T1:C1:updates';
+    io.to(channel).emit('update', updateBatch);
+    console.log(`Batch updates sent: ${updateBatch.length}`);
+    updateBatch = [];
+  }
+}, 1000);
+
 async function cacheNode(tenantId, configId, nodePath, value, version) {
-  const key = `${tenantId}:${configId}:${nodePath}`;
-  await redis.set(key, JSON.stringify({ value, version }));
-  await redis.sadd(`${tenantId}:${configId}:cached_nodes`, nodePath);
+  const key = `tenant:${tenantId}:config:${configId}:node:${nodePath}`;
+  await redis.setex(key, 3600, JSON.stringify({ value, version }));
+  await redis.sadd(`tenant:${tenantId}:config:${configId}:cached_nodes`, nodePath);
 }
 
-// Store metadata in Smart Registry
 async function updateMetadata(tenantId, configId, nodePath, dependencies, version) {
-  const metadataKey = `${tenantId}:${configId}:metadata:${nodePath}`;
+  const metadataKey = `tenant:${tenantId}:config:${configId}:metadata:${nodePath}`;
   await redis.hset(metadataKey, {
     version,
     dependencies: JSON.stringify(dependencies || []),
     updated_at: new Date().toISOString(),
+    dependents: JSON.stringify([]),
   });
+
+  for (const dep of dependencies) {
+    const depMetadataKey = `tenant:${tenantId}:config:${configId}:metadata:${dep}`;
+    const currentDependents = JSON.parse((await redis.hget(depMetadataKey, 'dependents')) || '[]');
+    if (!currentDependents.includes(nodePath)) {
+      currentDependents.push(nodePath);
+      await redis.hset(depMetadataKey, 'dependents', JSON.stringify(currentDependents));
+    }
+  }
 }
 
-// Invalidate a node and its dependencies
 async function invalidateNode(tenantId, configId, nodePath) {
-  const key = `${tenantId}:${configId}:${nodePath}`;
+  const key = `tenant:${tenantId}:config:${configId}:node:${nodePath}`;
   await redis.del(key);
-  const metadataKey = `${tenantId}:${configId}:metadata:${nodePath}`;
+  const metadataKey = `tenant:${tenantId}:config:${configId}:metadata:${nodePath}`;
   const dependencies = JSON.parse((await redis.hget(metadataKey, 'dependencies')) || '[]');
   for (const dep of dependencies) {
-    await redis.del(`${tenantId}:${configId}:${dep}`);
+    await redis.del(`tenant:${tenantId}:config:${configId}:node:${dep}`);
   }
   const version = (await redis.hget(metadataKey, 'version')) || 'v1';
-  const channel = `${tenantId}:${configId}:updates`;
-  redis.publish(
-    channel,
-    JSON.stringify({ path: nodePath, action: 'invalidated', version })
-  );
-  console.log(`Invalidated node ${nodePath} on channel ${channel}`);
+  updateBatch.push({ path: nodePath, action: 'invalidated', version });
 }
 
-// API to get config
 app.get('/api/:tenantId/:configId', async (req, res) => {
   const { tenantId, configId } = req.params;
   try {
@@ -110,66 +113,72 @@ app.get('/api/:tenantId/:configId', async (req, res) => {
     });
     res.json({ config });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// API to update a node
 app.post('/api/:tenantId/:configId', async (req, res) => {
   const { tenantId, configId } = req.params;
   const { path, value, dependencies } = req.body;
 
   try {
-    // Update in PostgreSQL
     await pool.query(
       'INSERT INTO configs (tenant_id, config_id, path, value, updated_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, config_id, path) DO UPDATE SET value = $4, updated_at = $5',
       [tenantId, configId, path, value, new Date()]
     );
 
-    // Cache and update metadata
     const version = `v${Date.now()}`;
     await cacheNode(tenantId, configId, path, value, version);
     await updateMetadata(tenantId, configId, path, dependencies, version);
-
-    // Invalidate cache
     await invalidateNode(tenantId, configId, path);
 
     res.json({ status: 'updated' });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// API for visualization metrics
 app.get('/metrics/:tenantId/:configId', async (req, res) => {
   const { tenantId, configId } = req.params;
+  const { limit = 100, offset = 0 } = req.query;
   try {
-    const cachedNodes = await redis.smembers(`${tenantId}:${configId}:cached_nodes`);
+    const cachedNodes = await redis.smembers(`tenant:${tenantId}:config:${configId}:cached_nodes`);
+    const paginatedNodes = cachedNodes.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
     const metrics = await Promise.all(
-      cachedNodes.map(async node => ({
-        path: node,
-        metadata: await redis.hgetall(`${tenantId}:${configId}:metadata:${node}`),
-      }))
+      paginatedNodes.map(async node => {
+        const metadata = await redis.hgetall(`tenant:${tenantId}:config:${configId}:metadata:${node}`);
+        metadata.dependencies = JSON.parse(metadata.dependencies || '[]');
+        metadata.dependents = JSON.parse(metadata.dependents || '[]');
+        return { path: node, metadata };
+      })
     );
-    const stats = await redis.info('stats');
-    res.json({ cachedNodes, metrics, stats });
+    res.json({ cachedNodes: paginatedNodes, metrics });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Socket.IO for real-time updates
-redis.subscribe('T1:C1:updates'); // Adjust based on tenantId and configId
+redis.subscribe('T1:C1:updates');
 redis.on('message', (channel, message) => {
   console.log(`Received message on ${channel}: ${message}`);
-  io.to(channel).emit('update', JSON.parse(message));
 });
-io.on('connection', (socket) => {
+
+io.engine.on('connection', (socket) => {
+  socket.setMaxListeners(10);
   socket.on('join', ({ tenantId, configId }) => {
     const channel = `${tenantId}:${configId}:updates`;
     socket.join(channel);
-    console.log(`Client joined channel ${channel}`);
+    console.log(`Client ${socket.id} joined ${channel}`);
   });
 });
 
-server.listen(3000, () => console.log('Server running on port 3000'));
+// Export for testing
+module.exports = { app, cacheNode, invalidateNode, updateMetadata };
+
+// Only start server if not in test environment
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(3000, () => console.log('Server running on port 3000'));
+}

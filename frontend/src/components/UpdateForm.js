@@ -11,6 +11,10 @@ export default function UpdateForm({ tenantId, configId }) {
 
   const handleSubmit = async e => {
     e.preventDefault();
+    if (!path.startsWith('/')) {
+      toast.error('Path must start with /');
+      return;
+    }
     try {
       await updateConfig(tenantId, configId, {
         path,
