@@ -54,6 +54,8 @@ log('Server Init', 'PostgreSQL pool initialized');
 
 const redis = new Redis({ host: process.env.REDIS_HOST || 'localhost', port: 6379 });
 
+const redisSubscriber = new Redis({ host: process.env.REDIS_HOST || 'localhost', port: 6379 });
+
 log('Server Init', 'Redis client initialized');
 
 let updateBatch = [];
@@ -157,10 +159,17 @@ app.get('/api/:tenantId/:configId', async (req, res) => {
       const keys = row.path.split('/').filter(k => k);
       let current = config;
       for (let i = 0; i < keys.length - 1; i++) {
-        current[keys[i]] = current[keys[i]] || {};
+        if (!current[keys[i]]) {
+          current[keys[i]] = {};
+        }
         current = current[keys[i]];
       }
-      current[keys[keys.length - 1]] = row.value;
+      // Store the value under a 'value' key if it's a leaf node
+      if (typeof current[keys[keys.length - 1]] === 'object') {
+        current[keys[keys.length - 1]].value = row.value;
+      } else {
+        current[keys[keys.length - 1]] = { value: row.value };
+      }
       log('GET /api/:tenantId/:configId', `Processed row`, { path: row.path, value: row.value });
     });
     log('GET /api/:tenantId/:configId', `Sending response`, config);
@@ -233,8 +242,13 @@ app.get('/metrics/:tenantId/:configId', async (req, res) => {
   }
 });
 
-redis.subscribe('T1:C1:updates');
-redis.on('message', (channel, message) => {
+// redis.subscribe('T1:C1:updates');
+// redis.on('message', (channel, message) => {
+//   log('Redis', `Received message on ${channel}`, message);
+// });
+// Use the subscriber client for subscriptions
+redisSubscriber.subscribe('T1:C1:updates');
+redisSubscriber.on('message', (channel, message) => {
   log('Redis', `Received message on ${channel}`, message);
 });
 
