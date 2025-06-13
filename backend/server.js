@@ -78,31 +78,45 @@ const redisSubscriber = new Redis({
   port: 6379,
 });
 
+redis.on('error', (err) => log('Redis', `Connection error: ${err.message}`, null, 'error'));
+redisSubscriber.on('error', (err) => log('RedisSubscriber', `Connection error: ${err.message}`, null, 'error'));
+
 log('Server Init', 'Redis clients initialized', null, 'success');
 
-let updateBatch = {};
+const subscriptionRegistry = new Map();
 
-setInterval(() => {
-  Object.keys(updateBatch).forEach((channel) => {
-    if (!Array.isArray(updateBatch[channel])) {
-      updateBatch[channel] = []; // Initialize as array if not set
-    }
-    if (updateBatch[channel].length > 0) {
-      log('Batch Update', `Sending ${updateBatch[channel].length} updates to ${channel}`, null, 'success');
-      io.to(channel).emit('update', updateBatch[channel]);
-      updateBatch[channel] = [];
+function matchesWildcard(path, pattern) {
+  const regex = new RegExp('^' + pattern.replace(/\*/g, '.*').replace(/\./g, '\\.') + '$');
+  return regex.test(path);
+}
+
+redisSubscriber.psubscribe('config_updates:*');
+redisSubscriber.on('pmessage', (pattern, channel, message) => {
+  const { tenantId, configId, data } = JSON.parse(message);
+  const socketChannel = `${tenantId}:${configId}:updates`;
+  const path = data[0]?.path;
+  subscriptionRegistry.forEach((socketIds, subPattern) => {
+    if (matchesWildcard(path, subPattern)) {
+      socketIds.forEach((socketId) => {
+        io.to(socketId).emit('update', data);
+      });
     }
   });
-}, 500);
+  io.to(socketChannel).emit('update', data);
+  log('Redis Pub/Sub', `Broadcasted to ${socketChannel}`, data, 'info');
+});
+
+let cacheHits = 0;
+let cacheMisses = 0;
 
 async function cacheNode(tenantId, configId, nodePath, value, version) {
   const key = `tenant:${tenantId}:config:${configId}:node:${nodePath}`;
+  const pipeline = redis.pipeline();
+  pipeline.setex(key, 3600, JSON.stringify({ value, version }));
+  pipeline.sadd(`tenant:${tenantId}:config:${configId}:cached_nodes`, nodePath);
   try {
-    const pipeline = redis.pipeline();
-    pipeline.setex(key, 3600, JSON.stringify({ value, version }));
-    pipeline.sadd(`tenant:${tenantId}:config:${configId}:cached_nodes`, nodePath);
-    const results = await pipeline.exec();
-    log('cacheNode', `Cached ${key} with version ${version}`, results, 'success');
+    await pipeline.exec();
+    log('cacheNode', `Cached ${key}`, null, 'success');
   } catch (err) {
     log('cacheNode', `Error caching ${key}`, err, 'error');
     throw err;
@@ -111,46 +125,48 @@ async function cacheNode(tenantId, configId, nodePath, value, version) {
 
 async function updateMetadata(tenantId, configId, nodePath, dependencies, version) {
   const metadataKey = `tenant:${tenantId}:config:${configId}:metadata:${nodePath}`;
-  try {
-    const pipeline = redis.pipeline();
-    pipeline.hset(metadataKey, {
-      version,
-      dependencies: JSON.stringify(dependencies || []),
-      updated_at: new Date().toISOString(),
-      dependents: JSON.stringify([]),
-    });
-    for (const dep of dependencies || []) {
-      const depMetadataKey = `tenant:${tenantId}:config:${configId}:metadata:${dep}`;
-      const currentDependents = JSON.parse((await redis.hget(depMetadataKey, 'dependents')) || '[]');
-      if (!currentDependents.includes(nodePath)) {
-        currentDependents.push(nodePath);
-        pipeline.hset(depMetadataKey, 'dependents', JSON.stringify(currentDependents));
-      }
+  const pipeline = redis.pipeline();
+  pipeline.hset(metadataKey, {
+    version,
+    dependencies: JSON.stringify(dependencies || []),
+    updated_at: new Date().toISOString(),
+    dependents: JSON.stringify([]),
+  });
+  for (const dep of dependencies || []) {
+    const depMetadataKey = `tenant:${tenantId}:config:${configId}:metadata:${dep}`;
+    const currentDependents = JSON.parse((await redis.hget(depMetadataKey, 'dependents')) || '[]');
+    if (!currentDependents.includes(nodePath)) {
+      currentDependents.push(nodePath);
+      pipeline.hset(depMetadataKey, 'dependents', JSON.stringify(currentDependents));
     }
-    const results = await pipeline.exec();
-    log('updateMetadata', `Updated metadata for ${metadataKey}`, results, 'success');
+  }
+  try {
+    await pipeline.exec();
+    log('updateMetadata', `Updated metadata for ${metadataKey}`, null, 'success');
   } catch (err) {
     log('updateMetadata', `Error updating metadata for ${metadataKey}`, err, 'error');
     throw err;
   }
 }
 
-async function invalidateNode(tenantId, configId, nodePath) {
+async function invalidateNode(tenantId, configId, nodePath, userId) {
   const key = `tenant:${tenantId}:config:${configId}:node:${nodePath}`;
   const metadataKey = `tenant:${tenantId}:config:${configId}:metadata:${nodePath}`;
-  const channel = `${tenantId}:${configId}:updates`;
+  const pipeline = redis.pipeline();
+  pipeline.del(key);
+  const dependencies = JSON.parse((await redis.hget(metadataKey, 'dependencies')) || '[]');
+  for (const dep of dependencies) {
+    pipeline.del(`tenant:${tenantId}:config:${configId}:node:${dep}`);
+  }
   try {
-    const pipeline = redis.pipeline();
-    pipeline.del(key);
-    const dependencies = JSON.parse((await redis.hget(metadataKey, 'dependencies')) || '[]');
-    for (const dep of dependencies) {
-      pipeline.del(`tenant:${tenantId}:config:${configId}:node:${dep}`);
-    }
-    const results = await pipeline.exec();
+    await pipeline.exec();
     const version = (await redis.hget(metadataKey, 'version')) || 'v1';
-    if (!updateBatch[channel]) updateBatch[channel] = [];
-    updateBatch[channel].push({ path: nodePath, action: 'invalidated', version });
-    log('invalidateNode', `Invalidated ${key} and dependencies`, results, 'success');
+    await redis.publish(`config_updates:${tenantId}:${configId}`, JSON.stringify({
+      tenantId,
+      configId,
+      data: [{ path: nodePath, action: 'invalidated', version, userId }]
+    }));
+    log('invalidateNode', `Published to config_updates:${tenantId}:${configId}`, null, 'success');
   } catch (err) {
     log('invalidateNode', `Error invalidating ${key}`, err, 'error');
     throw err;
@@ -165,10 +181,12 @@ app.get('/api/:tenantId/:configId', async (req, res) => {
   try {
     const cachedConfig = await redis.get(cacheKey);
     if (cachedConfig) {
+      cacheHits++;
       log('GET /api/:tenantId/:configId', `Cache hit for ${cacheKey}`, null, 'success');
       console.timeEnd('fetchConfigBackend');
       return res.json({ config: JSON.parse(cachedConfig) });
     }
+    cacheMisses++;
     log('GET /api/:tenantId/:configId', `Cache miss, querying DB`);
     const result = await pool.query(
       'SELECT path, value FROM configs WHERE tenant_id = $1 AND config_id = $2 ORDER BY path',
@@ -198,8 +216,8 @@ app.get('/api/:tenantId/:configId', async (req, res) => {
 app.post('/api/:tenantId/:configId', async (req, res) => {
   console.time('updateConfigBackend');
   const { tenantId, configId } = req.params;
-  const { path, value, dependencies } = req.body;
-  log('POST /api/:tenantId/:configId', `Request`, { path, value, dependencies });
+  const { path, value, dependencies, userId } = req.body;
+  log('POST /api/:tenantId/:configId', `Request by ${userId || 'Unknown'}`, { path, value, dependencies });
   if (!path.startsWith('/')) {
     log('POST /api/:tenantId/:configId', `Invalid path`, null, 'error');
     console.timeEnd('updateConfigBackend');
@@ -216,7 +234,7 @@ app.post('/api/:tenantId/:configId', async (req, res) => {
       const version = `v${Date.now()}`;
       await cacheNode(tenantId, configId, path, value, version);
       await updateMetadata(tenantId, configId, path, dependencies, version);
-      await invalidateNode(tenantId, configId, path);
+      await invalidateNode(tenantId, configId, path, userId);
       await redis.del(`tenant:${tenantId}:config:${configId}:full`);
       await client.query('COMMIT');
       log('POST /api/:tenantId/:configId', `Updated ${path}`, null, 'success');
@@ -261,7 +279,7 @@ app.get('/metrics/:tenantId/:configId', async (req, res) => {
     });
     log('GET /metrics/:tenantId/:configId', `Returning ${metrics.length} metrics`, null, 'success');
     console.timeEnd('fetchMetricsBackend');
-    res.json({ cachedNodes: paginatedNodes, metrics });
+    res.json({ cachedNodes, metrics, cacheStats: { hits: cacheHits, misses: cacheMisses } });
   } catch (err) {
     log('GET /metrics/:tenantId/:configId', `Error`, err, 'error');
     console.timeEnd('fetchMetricsBackend');
@@ -269,20 +287,27 @@ app.get('/metrics/:tenantId/:configId', async (req, res) => {
   }
 });
 
-redisSubscriber.subscribe('updates');
-redisSubscriber.on('message', (channel, message) => {
-  log('Redis', `Message on ${channel}`, message, 'info');
-});
-
 io.on('connection', (socket) => {
   log('Socket.IO', `Connected: ${socket.id}`, null, 'success');
   socket.setMaxListeners(15);
-  socket.on('join', ({ tenantId, configId }) => {
-    const channel = `${tenantId}:${configId}:updates`;
-    socket.join(channel);
-    log('Socket.IO', `${socket.id} joined ${channel}`, null, 'info');
+  socket.on('subscribe', ({ tenantId, configId, pathPattern }) => {
+    const socketChannel = `${tenantId}:${configId}:updates`;
+    socket.join(socketChannel);
+    if (pathPattern) {
+      const key = `${tenantId}:${configId}:${pathPattern}`;
+      if (!subscriptionRegistry.has(key)) {
+        subscriptionRegistry.set(key, new Set());
+      }
+      subscriptionRegistry.get(key).add(socket.id);
+      log('Socket.IO', `${socket.id} subscribed to ${key}`, null, 'info');
+    }
+    log('Socket.IO', `${socket.id} joined ${socketChannel}`, null, 'info');
   });
   socket.on('disconnect', () => {
+    subscriptionRegistry.forEach((socketIds, key) => {
+      socketIds.delete(socket.id);
+      if (socketIds.size === 0) subscriptionRegistry.delete(key);
+    });
     log('Socket.IO', `Disconnected: ${socket.id}`, null, 'warn');
   });
 });

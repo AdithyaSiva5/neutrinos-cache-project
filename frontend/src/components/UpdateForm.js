@@ -8,6 +8,8 @@ export default function UpdateForm({ tenantId, configId }) {
   const [path, setPath] = useState('');
   const [value, setValue] = useState('');
   const [dependencies, setDependencies] = useState('');
+  const [userId, setUserId] = useState('User1');
+  const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -20,19 +22,36 @@ export default function UpdateForm({ tenantId, configId }) {
       toast.error('Dependencies must start with /');
       return;
     }
+    setIsLoading(true);
     try {
-      await updateConfig(tenantId, configId, { path, value, dependencies: deps });
-      toast.success(`Updated ${path} for ${tenantId}:${configId}`);
+      await updateConfig(tenantId, configId, { path, value, dependencies: deps, userId });
+      toast.success(`Updated ${path} by ${userId} for ${tenantId}:${configId}`);
       setPath('');
       setValue('');
       setDependencies('');
     } catch (err) {
       toast.error(`Update failed: ${err.message}`);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label htmlFor="userId" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+          User ID
+        </label>
+        <select
+          id="userId"
+          value={userId}
+          onChange={(e) => setUserId(e.target.value)}
+          className="mt-1 p-2 w-full border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 transition-smooth"
+        >
+          <option value="User1">User1</option>
+          <option value="User2">User2</option>
+        </select>
+      </div>
       <div>
         <label htmlFor="path" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
           Node Path (e.g., /settings/theme/color)
@@ -73,9 +92,10 @@ export default function UpdateForm({ tenantId, configId }) {
       </div>
       <button
         type="submit"
-        className="p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700 transition-smooth"
+        disabled={isLoading}
+        className={`p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700 transition-smooth ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
-        Update Node
+        {isLoading ? 'Updating...' : 'Update Node'}
       </button>
     </form>
   );

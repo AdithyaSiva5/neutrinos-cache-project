@@ -22,6 +22,7 @@ export default function Dashboard() {
   const [events, setEvents] = useState([]);
   const [tenantId, setTenantId] = useState('T1');
   const [configId, setConfigId] = useState('C1');
+  const [cacheStats, setCacheStats] = useState({ hits: 0, misses: 0 });
 
   const updateConfigAndMetrics = useCallback(() => {
     console.time('fetchConfigFrontend');
@@ -32,7 +33,10 @@ export default function Dashboard() {
       })
       .catch((err) => toast.error(`Config fetch failed: ${err.message}`));
     fetchMetrics(tenantId, configId)
-      .then((data) => setMetrics(data.metrics || []))
+      .then((data) => {
+        setMetrics(data.metrics || []);
+        setCacheStats(data.cacheStats || { hits: 0, misses: 0 });
+      })
       .catch((err) => toast.error(`Metrics fetch failed: ${err.message}`));
   }, [tenantId, configId]);
 
@@ -45,6 +49,7 @@ export default function Dashboard() {
             path: u.path,
             action: u.action,
             version: u.version,
+            userId: u.userId || 'Unknown',
             time: new Date().toLocaleTimeString(),
           })),
           ...prev,
@@ -52,20 +57,38 @@ export default function Dashboard() {
       );
       updateConfigAndMetrics();
       toast.info(`Update received: ${updateArray.length} nodes affected`);
-    }, 500),
+    }, 200),
     [updateConfigAndMetrics]
   );
 
   useEffect(() => {
     updateConfigAndMetrics();
     const socket = useSocket();
-    socket.emit('join', { tenantId, configId });
+    socket.emit('subscribe', { tenantId, configId, pathPattern: '*.theme.*' });
     socket.on('update', handleSocketUpdate);
     return () => {
       socket.off('update', handleSocketUpdate);
       disconnectSocket();
     };
   }, [tenantId, configId, handleSocketUpdate]);
+
+  const handleTenantChange = (e) => {
+    const value = e.target.value.trim();
+    if (value && !/^[A-Za-z0-9]+$/.test(value)) {
+      toast.error('Tenant ID must be alphanumeric');
+      return;
+    }
+    setTenantId(value);
+  };
+
+  const handleConfigChange = (e) => {
+    const value = e.target.value.trim();
+    if (value && !/^[A-Za-z0-9]+$/.test(value)) {
+      toast.error('Config ID must be alphanumeric');
+      return;
+    }
+    setConfigId(value);
+  };
 
   return (
     <div className="space-y-6">
@@ -76,14 +99,14 @@ export default function Dashboard() {
           <input
             type="text"
             value={tenantId}
-            onChange={(e) => setTenantId(e.target.value.trim())}
+            onChange={handleTenantChange}
             placeholder="Enter Tenant ID (e.g., T1, T2)"
             className="p-2 border rounded-lg dark:bg-gray-700 dark:text-gray-100 w-full"
           />
           <input
             type="text"
             value={configId}
-            onChange={(e) => setConfigId(e.target.value.trim())}
+            onChange={handleConfigChange}
             placeholder="Enter Config ID (e.g., C1, C2)"
             className="p-2 border rounded-lg dark:bg-gray-700 dark:text-gray-100 w-full"
           />
@@ -107,7 +130,7 @@ export default function Dashboard() {
             <h2 className="text-2xl font-semibold mb-4 text-gray-800 dark:text-gray-100">
               Cache Metrics
             </h2>
-            <CacheMetrics metrics={metrics} tenantId={tenantId} />
+            <CacheMetrics metrics={metrics} tenantId={tenantId} cacheStats={cacheStats} />
           </div>
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg transition-smooth">
             <h2 className="text-2xl font-semibold mb-4 text-gray-800 dark:text-gray-100">
