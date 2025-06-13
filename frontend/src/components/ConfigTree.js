@@ -6,153 +6,303 @@ import { debounce } from 'lodash';
 
 export default function ConfigTree({ config, metrics, tenantId, configId }) {
   const svgRef = useRef();
+  const depSvgRef = useRef();
   const [isLoading, setIsLoading] = useState(true);
   const memoizedConfig = useMemo(() => config, [JSON.stringify(config)]);
   const memoizedMetrics = useMemo(() => metrics, [JSON.stringify(metrics)]);
 
+  // Convert flat config object to hierarchical structure for D3 tree
   const convertToHierarchy = (configObj) => {
     if (!configObj || Object.keys(configObj).length === 0) {
-      return { name: `root_${tenantId}_${configId}`, children: [] };
+      return {
+        name: `${tenantId}:${configId}`,
+        path: '/',
+        children: [],
+        isEmpty: true
+      };
     }
-    const root = { name: `root_${tenantId}_${configId}`, children: [] };
-    const processNode = (node, data, path = '') => {
-      if (!data || typeof data !== 'object') return;
-      Object.keys(data).forEach(key => {
-        const currentPath = path ? `${path}/${key}` : `/${key}`;
-        const childNode = { name: key, children: [], path: currentPath };
-        node.children.push(childNode);
-        if (data[key]?.value !== undefined) {
-          childNode.value = data[key].value;
+
+    const root = {
+      name: `${tenantId}:${configId}`,
+      path: '/',
+      children: []
+    };
+
+    // Recursively build tree structure
+    const buildNode = (obj, parentPath = '', parentNode) => {
+      Object.keys(obj).forEach(key => {
+        const currentPath = parentPath === '/' ? `/${key}` : `${parentPath}/${key}`;
+        const value = obj[key];
+        
+        const node = {
+          name: key,
+          path: currentPath,
+          children: []
+        };
+
+        // If the value has a 'value' property, it's a leaf node
+        if (value && typeof value === 'object' && value.hasOwnProperty('value')) {
+          node.value = value.value;
+          node.isLeaf = true;
+        } 
+        // If it's an object without 'value', it's a branch node
+        else if (value && typeof value === 'object') {
+          buildNode(value, currentPath, node);
         }
-        processNode(childNode, data[key], currentPath);
+        // If it's a primitive value, treat it as a leaf
+        else {
+          node.value = value;
+          node.isLeaf = true;
+        }
+
+        parentNode.children.push(node);
       });
     };
-    processNode(root, configObj);
+
+    buildNode(configObj, '/', root);
     return root;
+  };
+
+  // Check if a node is cached based on metrics
+  const isNodeCached = (nodePath) => {
+    return memoizedMetrics.some(metric => metric.path === nodePath);
+  };
+
+  // Get node version from metrics
+  const getNodeVersion = (nodePath) => {
+    const metric = memoizedMetrics.find(m => m.path === nodePath);
+    return metric ? metric.metadata.version : null;
   };
 
   const renderTree = useMemo(
     () => debounce(() => {
-      if (!Object.keys(memoizedConfig).length) {
-        console.log('No config data for', tenantId, configId);
+      if (!svgRef.current) return;
+
+      const svg = d3.select(svgRef.current);
+      const width = 1000;
+      const height = 600;
+      
+      svg
+        .attr('width', '100%')
+        .attr('height', height)
+        .attr('viewBox', `0 0 ${width} ${height}`)
+        .style('overflow', 'visible');
+
+      // Clear previous content
+      svg.selectAll('*').remove();
+
+      const hierarchicalData = convertToHierarchy(memoizedConfig);
+      
+      // Handle empty state
+      if (hierarchicalData.isEmpty) {
+        const g = svg.append('g').attr('transform', 'translate(50, 50)');
+        
+        g.append('text')
+          .attr('x', 0)
+          .attr('y', 0)
+          .style('font-size', '16px')
+          .style('fill', '#666')
+          .text(`No configuration data for ${tenantId}:${configId}`);
+        
+        g.append('text')
+          .attr('x', 0)
+          .attr('y', 25)
+          .style('font-size', '14px')
+          .style('fill', '#999')
+          .text('Try updating some configuration values to see the tree structure.');
+        
         setIsLoading(false);
         return;
       }
-      const svg = d3
-        .select(svgRef.current)
-        .attr('width', '100%')
-        .attr('height', 600)
-        .attr('viewBox', '0 0 1000 600')
-        .style('overflow', 'visible');
 
-      const g = svg.selectAll('g').data([0]).join('g').attr('transform', 'translate(100, 50)');
-
-      const hierarchicalData = convertToHierarchy(memoizedConfig);
       const root = d3.hierarchy(hierarchicalData);
-      const treeLayout = d3.tree().size([800, 500]);
+      const treeLayout = d3.tree().size([width - 200, height - 100]);
       treeLayout(root);
 
-      const links = g
-        .selectAll('.link')
-        .data(root.links(), (d) => `${d.source.data.path}-${d.target.data.path}`);
-      links
+      const g = svg.append('g').attr('transform', 'translate(100, 50)');
+
+      // Create links between nodes
+      if (root.links().length > 0) {
+        g.selectAll('.link')
+          .data(root.links())
+          .enter()
+          .append('path')
+          .attr('class', 'link')
+          .attr('d', d3.linkVertical()
+            .x(d => d.x)
+            .y(d => d.y)
+          )
+          .attr('fill', 'none')
+          .attr('stroke', '#ccc')
+          .attr('stroke-width', 2)
+          .style('opacity', 0.7);
+      }
+
+      // Create node groups
+      const nodeGroups = g.selectAll('.node')
+        .data(root.descendants())
         .enter()
-        .append('path')
-        .attr('class', 'link')
-        .merge(links)
-        .attr('d', d3.linkVertical().x(d => d.x).y(d => d.y))
-        .attr('fill', 'none')
-        .attr('stroke', '#999')
-        .attr('stroke-width', 2);
-      links.exit().remove();
-
-      const nodes = g
-        .selectAll('.node')
-        .data(root.descendants(), (d) => d.data.path)
-        .join('g')
+        .append('g')
         .attr('class', 'node')
-        .attr('transform', (d) => `translate(${d.x},${d.y})`);
+        .attr('transform', d => `translate(${d.x},${d.y})`)
+        .style('cursor', 'pointer');
 
-      nodes
+      // Add circles for nodes
+      nodeGroups
         .append('circle')
-        .attr('r', 12)
-        .attr('class', 'transition-smooth cursor-pointer')
-        .attr('fill', (d) => {
-          const nodePath = d.data.path || d.ancestors().reverse().slice(1).map(n => n.data.name).join('/');
-          const fullPath = nodePath.startsWith('/') ? nodePath : `/${nodePath}`;
-          const metric = memoizedMetrics.find(m => m.path === fullPath);
-          return metric ? '#3B82F6' : '#6B7280';
+        .attr('r', d => d.data.isLeaf ? 8 : 12)
+        .attr('fill', d => {
+          if (!d.data.path || d.data.path === '/') return '#64748b'; // Root node
+          if (isNodeCached(d.data.path)) return '#3b82f6'; // Cached nodes (blue)
+          if (d.data.isLeaf) return '#10b981'; // Leaf nodes (green)
+          return '#f59e0b'; // Branch nodes (amber)
         })
         .attr('stroke', '#fff')
         .attr('stroke-width', 2)
+        .style('filter', 'drop-shadow(0 2px 4px rgba(0,0,0,0.1))')
+        .on('mouseover', function(event, d) {
+          d3.select(this)
+            .transition()
+            .duration(200)
+            .attr('r', d.data.isLeaf ? 10 : 15)
+            .style('filter', 'drop-shadow(0 4px 8px rgba(0,0,0,0.2))');
+        })
+        .on('mouseout', function(event, d) {
+          d3.select(this)
+            .transition()
+            .duration(200)
+            .attr('r', d.data.isLeaf ? 8 : 12)
+            .style('filter', 'drop-shadow(0 2px 4px rgba(0,0,0,0.1))');
+        })
         .on('click', (event, d) => {
-          const nodePath = d.data.path || d.ancestors().reverse().slice(1).map(n => n.data.name).join('/');
-          const fullPath = nodePath.startsWith('/') ? nodePath : `/${nodePath}`;
-          alert(`Tenant: ${tenantId}\nConfig: ${configId}\nPath: ${fullPath}\nValue: ${d.data.value || 'N/A'}`);
+          const version = getNodeVersion(d.data.path);
+          const isCached = isNodeCached(d.data.path);
+          
+          alert(
+            `Tenant: ${tenantId}\n` +
+            `Config: ${configId}\n` +
+            `Path: ${d.data.path}\n` +
+            `Value: ${d.data.value !== undefined ? d.data.value : 'N/A'}\n` +
+            `Type: ${d.data.isLeaf ? 'Leaf' : 'Branch'}\n` +
+            `Cached: ${isCached ? 'Yes' : 'No'}` +
+            (version ? `\nVersion: ${version}` : '')
+          );
         });
 
-      nodes
+      // Add node labels
+      nodeGroups
         .append('text')
-        .attr('dy', (d) => (d.children ? -18 : 28))
+        .attr('dy', d => d.children ? -20 : 25)
         .attr('text-anchor', 'middle')
         .style('font-size', '12px')
-        .style('font-weight', 'bold')
-        .text((d) => d.data.name)
-        .attr('fill', () => document.documentElement.classList.contains('dark') ? '#fff' : '#000');
+        .style('font-weight', '600')
+        .style('fill', document.documentElement.classList.contains('dark') ? '#fff' : '#374151')
+        .text(d => d.data.name);
 
-      nodes
+      // Add value labels for leaf nodes
+      nodeGroups
         .filter(d => d.data.value !== undefined)
         .append('text')
-        .attr('dy', 45)
+        .attr('dy', 40)
         .attr('text-anchor', 'middle')
         .style('font-size', '10px')
-        .style('fill', '#666')
-        .text((d) => `${d.data.value}`);
+        .style('fill', '#6b7280')
+        .style('font-style', 'italic')
+        .text(d => String(d.data.value).length > 15 ? 
+          String(d.data.value).substring(0, 15) + '...' : 
+          String(d.data.value)
+        );
+
+      // Add cache indicators
+      nodeGroups
+        .filter(d => isNodeCached(d.data.path))
+        .append('circle')
+        .attr('r', 4)
+        .attr('cx', 15)
+        .attr('cy', -15)
+        .attr('fill', '#ef4444')
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 1)
+        .style('opacity', 0.9);
 
       setIsLoading(false);
-    }, 200),
+    }, 300),
     [memoizedConfig, memoizedMetrics, tenantId, configId]
   );
 
   const renderDependencyMap = useMemo(
     () => debounce(() => {
-      const depSvg = d3
-        .select(svgRef.current.parentNode)
-        .selectAll('.dep-svg')
-        .data([0])
-        .join('svg')
-        .attr('class', 'dep-svg')
+      if (!depSvgRef.current || !memoizedMetrics.length) return;
+
+      const svg = d3.select(depSvgRef.current);
+      const width = 1000;
+      const height = 300;
+      
+      svg
         .attr('width', '100%')
-        .attr('height', 300)
-        .attr('viewBox', '0 0 1000 300')
+        .attr('height', height)
+        .attr('viewBox', `0 0 ${width} ${height}`)
         .style('overflow', 'visible');
 
-      const depData = memoizedMetrics.flatMap(m =>
-        m.metadata.dependencies.map(dep => ({ source: m.path, target: dep }))
-      );
-      const nodes = Array.from(new Set(depData.flatMap(d => [d.source, d.target])))
-        .map(path => ({ id: path }));
-      const links = depData.map(d => ({ source: d.source, target: d.target }));
+      svg.selectAll('*').remove();
 
-      const simulation = d3
-        .forceSimulation(nodes)
-        .force('link', d3.forceLink(links).id(d => d.id).distance(100))
-        .force('charge', d3.forceManyBody().strength(-200))
-        .force('center', d3.forceCenter(500, 150));
+      // Create dependency graph data
+      const nodes = new Set();
+      const links = [];
 
-      const link = depSvg
-        .selectAll('line')
-        .data(links)
-        .join('line')
-        .attr('stroke', '#999')
-        .attr('stroke-width', 2);
+      memoizedMetrics.forEach(metric => {
+        nodes.add(metric.path);
+        if (metric.metadata.dependencies) {
+          metric.metadata.dependencies.forEach(dep => {
+            nodes.add(dep);
+            links.push({ source: dep, target: metric.path });
+          });
+        }
+      });
 
-      const node = depSvg
-        .selectAll('circle')
-        .data(nodes)
-        .join('circle')
-        .attr('r', 10)
-        .attr('fill', '#3B82F6')
+      const nodeArray = Array.from(nodes).map(id => ({ id }));
+      const linkArray = links;
+
+      if (nodeArray.length === 0) return;
+
+      const simulation = d3.forceSimulation(nodeArray)
+        .force('link', d3.forceLink(linkArray).id(d => d.id).distance(80))
+        .force('charge', d3.forceManyBody().strength(-300))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collision', d3.forceCollide().radius(30));
+
+      const g = svg.append('g');
+
+      // Add links
+      const link = g.selectAll('.dep-link')
+        .data(linkArray)
+        .enter()
+        .append('line')
+        .attr('class', 'dep-link')
+        .attr('stroke', '#94a3b8')
+        .attr('stroke-width', 2)
+        .attr('marker-end', 'url(#arrowhead)');
+
+      // Add arrowhead marker
+      svg.append('defs').append('marker')
+        .attr('id', 'arrowhead')
+        .attr('viewBox', '0 -5 10 10')
+        .attr('refX', 15)
+        .attr('refY', 0)
+        .attr('markerWidth', 6)
+        .attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M0,-5L10,0L0,5')
+        .attr('fill', '#94a3b8');
+
+      // Add nodes
+      const node = g.selectAll('.dep-node')
+        .data(nodeArray)
+        .enter()
+        .append('g')
+        .attr('class', 'dep-node')
+        .style('cursor', 'pointer')
         .call(d3.drag()
           .on('start', (event, d) => {
             if (!event.active) simulation.alphaTarget(0.3).restart();
@@ -170,7 +320,23 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           })
         );
 
-      node.append('title').text(d => d.id);
+      node.append('circle')
+        .attr('r', 12)
+        .attr('fill', '#3b82f6')
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 2);
+
+      node.append('text')
+        .attr('dy', 4)
+        .attr('text-anchor', 'middle')
+        .style('font-size', '8px')
+        .style('font-weight', 'bold')
+        .style('fill', '#fff')
+        .text(d => d.id.split('/').pop() || 'root');
+
+      // Add tooltips
+      node.append('title')
+        .text(d => d.id);
 
       simulation.on('tick', () => {
         link
@@ -178,17 +344,18 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           .attr('y1', d => d.source.y)
           .attr('x2', d => d.target.x)
           .attr('y2', d => d.target.y);
-        node
-          .attr('cx', d => d.x)
-          .attr('cy', d => d.y);
+
+        node.attr('transform', d => `translate(${d.x},${d.y})`);
       });
-    }, 200),
+
+    }, 300),
     [memoizedMetrics]
   );
 
   useEffect(() => {
     renderTree();
     renderDependencyMap();
+    
     return () => {
       renderTree.cancel();
       renderDependencyMap.cancel();
@@ -196,21 +363,67 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
   }, [renderTree, renderDependencyMap]);
 
   return (
-    <div className="overflow-x-auto">
-      <svg ref={svgRef} className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900" />
-      {isLoading ? (
-        <div className="text-center text-gray-500 dark:text-gray-400 py-8">Loading...</div>
-      ) : Object.keys(memoizedConfig).length === 0 ? (
-        <div className="text-center text-gray-500 dark:text-gray-400 py-8">
-          No configuration data for Tenant {tenantId}, Config {configId}
-        </div>
-      ) : null}
-      <div className="mt-4">
-        <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Dependency Map</h3>
-        <div className="overflow-x-auto">
-          <svg className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900" />
+    <div className="space-y-6">
+      {/* Main Tree Visualization */}
+      <div className="relative">
+        <svg 
+          ref={svgRef} 
+          className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900"
+        />
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white/80 dark:bg-gray-900/80">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-2"></div>
+              <div className="text-gray-500 dark:text-gray-400">Loading tree...</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg">
+        <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Legend:</h4>
+        <div className="flex flex-wrap gap-4 text-xs">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded-full bg-gray-500"></div>
+            <span>Root Node</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded-full bg-blue-500"></div>
+            <span>Cached Node</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded-full bg-green-500"></div>
+            <span>Leaf Node</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded-full bg-amber-500"></div>
+            <span>Branch Node</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-red-500"></div>
+            <span>Cache Indicator</span>
+          </div>
         </div>
       </div>
+
+      {/* Dependency Map */}
+      {memoizedMetrics.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
+            Dependency Map
+          </h3>
+          <div className="relative">
+            <svg 
+              ref={depSvgRef}
+              className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900"
+            />
+          </div>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Drag nodes to rearrange. Arrows show dependency relationships.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

@@ -22,6 +22,15 @@ export default function UpdateForm({ tenantId, configId }) {
       toast.error('Dependencies must start with /');
       return;
     }
+    // Optional: Restrict users for demo (e.g., User1 for T1, User2 for T2)
+    // if (userId === 'User1' && tenantId !== 'T1') {
+    //   toast.error('User1 can only update T1');
+    //   return;
+    // }
+    // if (userId === 'User2' && tenantId !== 'T2') {
+    //   toast.error('User2 can only update T2');
+    //   return;
+    // }
     setIsLoading(true);
     try {
       await updateConfig(tenantId, configId, { path, value, dependencies: deps, userId });
@@ -40,7 +49,7 @@ export default function UpdateForm({ tenantId, configId }) {
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
         <label htmlFor="userId" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-          User ID
+          User ID (Demo: User1/User2 are placeholders, no functional difference)
         </label>
         <select
           id="userId"

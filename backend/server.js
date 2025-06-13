@@ -176,6 +176,11 @@ async function invalidateNode(tenantId, configId, nodePath, userId) {
 app.get('/api/:tenantId/:configId', async (req, res) => {
   console.time('fetchConfigBackend');
   const { tenantId, configId } = req.params;
+  if (!/^[A-Za-z0-9]+$/.test(tenantId) || !/^[A-Za-z0-9]+$/.test(configId)) {
+    log('GET /api/:tenantId/:configId', `Invalid tenantId or configId`, { tenantId, configId }, 'error');
+    console.timeEnd('fetchConfigBackend');
+    return res.status(400).json({ error: 'Tenant ID and Config ID must be alphanumeric' });
+  }
   const cacheKey = `tenant:${tenantId}:config:${configId}:full`;
   log('GET /api/:tenantId/:configId', `Request for ${tenantId}:${configId}`);
   try {
@@ -207,7 +212,7 @@ app.get('/api/:tenantId/:configId', async (req, res) => {
     console.timeEnd('fetchConfigBackend');
     res.json({ config });
   } catch (err) {
-    log('GET /api/:tenantId/:configId', `Error`, err, 'error');
+    log('GET /api/:tenantId/:configId', `Error: ${err.message}`, err.stack, 'error');
     console.timeEnd('fetchConfigBackend');
     res.status(500).json({ error: `Failed to fetch config: ${err.message}` });
   }
@@ -217,6 +222,11 @@ app.post('/api/:tenantId/:configId', async (req, res) => {
   console.time('updateConfigBackend');
   const { tenantId, configId } = req.params;
   const { path, value, dependencies, userId } = req.body;
+  if (!/^[A-Za-z0-9]+$/.test(tenantId) || !/^[A-Za-z0-9]+$/.test(configId)) {
+    log('POST /api/:tenantId/:configId', `Invalid tenantId or configId`, { tenantId, configId }, 'error');
+    console.timeEnd('updateConfigBackend');
+    return res.status(400).json({ error: 'Tenant ID and Config ID must be alphanumeric' });
+  }
   log('POST /api/:tenantId/:configId', `Request by ${userId || 'Unknown'}`, { path, value, dependencies });
   if (!path.startsWith('/')) {
     log('POST /api/:tenantId/:configId', `Invalid path`, null, 'error');
@@ -242,12 +252,13 @@ app.post('/api/:tenantId/:configId', async (req, res) => {
       res.json({ status: 'updated' });
     } catch (err) {
       await client.query('ROLLBACK');
+      log('POST /api/:tenantId/:configId', `Transaction error: ${err.message}`, err.stack, 'error');
       throw err;
     } finally {
       client.release();
     }
   } catch (err) {
-    log('POST /api/:tenantId/:configId', `Error`, err, 'error');
+    log('POST /api/:tenantId/:configId', `Error: ${err.message}`, err.stack, 'error');
     console.timeEnd('updateConfigBackend');
     res.status(500).json({ error: `Failed to update config: ${err.message}` });
   }
@@ -257,6 +268,11 @@ app.get('/metrics/:tenantId/:configId', async (req, res) => {
   console.time('fetchMetricsBackend');
   const { tenantId, configId } = req.params;
   const { limit = 100, offset = 0 } = req.query;
+  if (!/^[A-Za-z0-9]+$/.test(tenantId) || !/^[A-Za-z0-9]+$/.test(configId)) {
+    log('GET /metrics/:tenantId/:configId', `Invalid tenantId or configId`, { tenantId, configId }, 'error');
+    console.timeEnd('fetchMetricsBackend');
+    return res.status(400).json({ error: 'Tenant ID and Config ID must be alphanumeric' });
+  }
   log('GET /metrics/:tenantId/:configId', `Request`, { limit, offset });
   try {
     const cachedNodes = await redis.smembers(`tenant:${tenantId}:config:${configId}:cached_nodes`);
@@ -281,7 +297,7 @@ app.get('/metrics/:tenantId/:configId', async (req, res) => {
     console.timeEnd('fetchMetricsBackend');
     res.json({ cachedNodes, metrics, cacheStats: { hits: cacheHits, misses: cacheMisses } });
   } catch (err) {
-    log('GET /metrics/:tenantId/:configId', `Error`, err, 'error');
+    log('GET /metrics/:tenantId/:configId', `Error: ${err.message}`, err.stack, 'error');
     console.timeEnd('fetchMetricsBackend');
     res.status(500).json({ error: err.message });
   }
@@ -291,6 +307,10 @@ io.on('connection', (socket) => {
   log('Socket.IO', `Connected: ${socket.id}`, null, 'success');
   socket.setMaxListeners(15);
   socket.on('subscribe', ({ tenantId, configId, pathPattern }) => {
+    if (!/^[A-Za-z0-9]+$/.test(tenantId) || !/^[A-Za-z0-9]+$/.test(configId)) {
+      log('Socket.IO', `Invalid tenantId or configId in subscription`, { tenantId, configId }, 'error');
+      return;
+    }
     const socketChannel = `${tenantId}:${configId}:updates`;
     socket.join(socketChannel);
     if (pathPattern) {
