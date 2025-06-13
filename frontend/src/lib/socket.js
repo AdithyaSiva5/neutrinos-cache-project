@@ -12,15 +12,9 @@ export const useSocket = () => {
       reconnectionDelay: 1000,
       withCredentials: true,
     });
-    socket.on('connect', () => {
-      console.log('Socket.IO connected');
-    });
-    socket.on('connect_error', (err) => {
-      console.error('Socket.IO connection error:', err.message, err.stack);
-    });
-    socket.on('reconnect_attempt', () => {
-      console.log('Attempting to reconnect...');
-    });
+    socket.on('connect', () => console.log('Socket.IO connected'));
+    socket.on('connect_error', (err) => console.error('Socket.IO error:', err.message));
+    socket.on('reconnect_attempt', () => console.log('Socket.IO reconnecting...'));
   }
   return socket;
 };

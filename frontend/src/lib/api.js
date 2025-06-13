@@ -1,10 +1,15 @@
 import axios from 'axios';
 
 const API_BASE_URL = 'http://localhost:3000';
+const instance = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 5000,
+  headers: { 'Content-Type': 'application/json' },
+});
 
 export const fetchConfig = async (tenantId, configId) => {
   try {
-    const response = await axios.get(`${API_BASE_URL}/api/${tenantId}/${configId}`);
+    const response = await instance.get(`/api/${tenantId}/${configId}`);
     return response.data;
   } catch (error) {
     throw new Error(error.response?.data?.error || 'Failed to fetch config');
@@ -13,7 +18,7 @@ export const fetchConfig = async (tenantId, configId) => {
 
 export const fetchMetrics = async (tenantId, configId) => {
   try {
-    const response = await axios.get(`${API_BASE_URL}/metrics/${tenantId}/${configId}`);
+    const response = await instance.get(`/metrics/${tenantId}/${configId}`);
     return response.data;
   } catch (error) {
     throw new Error(error.response?.data?.error || 'Failed to fetch metrics');
@@ -22,7 +27,7 @@ export const fetchMetrics = async (tenantId, configId) => {
 
 export const updateConfig = async (tenantId, configId, { path, value, dependencies }) => {
   try {
-    const response = await axios.post(`${API_BASE_URL}/api/${tenantId}/${configId}`, {
+    const response = await instance.post(`/api/${tenantId}/${configId}`, {
       path,
       value,
       dependencies,

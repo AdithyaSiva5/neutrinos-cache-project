@@ -9,7 +9,7 @@ export default function EventLog({ events }) {
         events.map((e, i) => (
           <div
             key={i}
-            className="p-3 bg-blue-100 dark:bg-blue-900 rounded-lg transition-smooth hover:bg-blue-200 dark:hover:bg-blue-800"
+            className="p-3 bg-blue-100 dark:bg-blue-900 rounded-lg hover:bg-blue-200 dark:hover:bg-blue-800 transition-smooth"
           >
             <p className="text-sm text-gray-800 dark:text-gray-100">
               {e.time}: <span className="font-medium">{e.path}</span> {e.action} (Version: {e.version})

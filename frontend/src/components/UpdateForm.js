@@ -15,23 +15,19 @@ export default function UpdateForm({ tenantId, configId }) {
       toast.error('Path must start with /');
       return;
     }
-    const deps = dependencies.split(',').map((d) => d.trim()).filter((d) => d);
-    if (deps.some((dep) => !dep.startsWith('/'))) {
-      toast.error('All dependencies must start with /');
+    const deps = dependencies.split(',').map(d => d.trim()).filter(d => d);
+    if (deps.some(dep => !dep.startsWith('/'))) {
+      toast.error('Dependencies must start with /');
       return;
     }
     try {
-      await updateConfig(tenantId, configId, {
-        path,
-        value,
-        dependencies: deps,
-      });
-      toast.success(`Updated ${path}`);
+      await updateConfig(tenantId, configId, { path, value, dependencies: deps });
+      toast.success(`Updated ${path} for ${tenantId}:${configId}`);
       setPath('');
       setValue('');
       setDependencies('');
     } catch (err) {
-      toast.error(`Failed to update: ${err.message}`);
+      toast.error(`Update failed: ${err.message}`);
     }
   };
 

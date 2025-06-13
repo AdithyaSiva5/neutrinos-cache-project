@@ -20,52 +20,47 @@ export default function Dashboard() {
   const [config, setConfig] = useState({});
   const [metrics, setMetrics] = useState([]);
   const [events, setEvents] = useState([]);
-  const tenantId = 'T1';
-  const configId = 'C1';
+  const [tenantId, setTenantId] = useState('T1');
+  const [configId, setConfigId] = useState('C1');
 
   const updateConfigAndMetrics = useCallback(() => {
+    console.time('fetchConfigFrontend');
     fetchConfig(tenantId, configId)
-      .then((data) => setConfig(data.config))
-      .catch((err) => toast.error(`Failed to fetch config: ${err.message}`));
-
+      .then((data) => {
+        setConfig(data.config || {});
+        console.timeEnd('fetchConfigFrontend');
+      })
+      .catch((err) => toast.error(`Config fetch failed: ${err.message}`));
     fetchMetrics(tenantId, configId)
-      .then((data) => setMetrics(data.metrics))
-      .catch((err) => toast.error(`Failed to fetch metrics: ${err.message}`));
+      .then((data) => setMetrics(data.metrics || []))
+      .catch((err) => toast.error(`Metrics fetch failed: ${err.message}`));
   }, [tenantId, configId]);
 
   const handleSocketUpdate = useCallback(
     throttle((updates) => {
-      if (Array.isArray(updates)) {
-        updates.forEach(({ path, action, version }) => {
-          setEvents((prev) =>
-            [
-              ...prev,
-              { path, action, version, time: new Date().toLocaleTimeString() },
-            ].slice(-10)
-          );
-          toast.info(`Node ${path} ${action} (v${version})`);
-        });
-      } else {
-        setEvents((prev) =>
-          [
-            ...prev,
-            { path: updates.path, action: updates.action, version: updates.version, time: new Date().toLocaleTimeString() },
-          ].slice(-10)
-        );
-        toast.info(`Node ${updates.path} ${updates.action} (v${updates.version})`);
-      }
+      const updateArray = Array.isArray(updates) ? updates : [updates];
+      setEvents((prev) =>
+        [
+          ...updateArray.map((u) => ({
+            path: u.path,
+            action: u.action,
+            version: u.version,
+            time: new Date().toLocaleTimeString(),
+          })),
+          ...prev,
+        ].slice(0, 10)
+      );
       updateConfigAndMetrics();
-    }, 1000),
+      toast.info(`Update received: ${updateArray.length} nodes affected`);
+    }, 500),
     [updateConfigAndMetrics]
   );
 
   useEffect(() => {
     updateConfigAndMetrics();
-
     const socket = useSocket();
     socket.emit('join', { tenantId, configId });
     socket.on('update', handleSocketUpdate);
-
     return () => {
       socket.off('update', handleSocketUpdate);
       disconnectSocket();
@@ -73,14 +68,33 @@ export default function Dashboard() {
   }, [tenantId, configId, handleSocketUpdate]);
 
   return (
-    <div>
-      <ToastContainer position="top-right" autoClose={3000} />
+    <div className="space-y-6">
+      <ToastContainer position="top-right" autoClose={2000} limit={5} />
+      <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-lg">
+        <h2 className="text-xl font-semibold mb-4 text-gray-800 dark:text-gray-200">Tenant Config</h2>
+        <div className="flex-col space-y-2 mb-4">
+          <input
+            type="text"
+            value={tenantId}
+            onChange={(e) => setTenantId(e.target.value.trim())}
+            placeholder="Enter Tenant ID (e.g., T1, T2)"
+            className="p-2 border rounded-lg dark:bg-gray-700 dark:text-gray-100 w-full"
+          />
+          <input
+            type="text"
+            value={configId}
+            onChange={(e) => setConfigId(e.target.value.trim())}
+            placeholder="Enter Config ID (e.g., C1, C2)"
+            className="p-2 border rounded-lg dark:bg-gray-700 dark:text-gray-100 w-full"
+          />
+        </div>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg transition-smooth">
           <h2 className="text-2xl font-semibold mb-4 text-gray-800 dark:text-gray-100">
             JSON Tree Visualization
           </h2>
-          <ConfigTree config={config} metrics={metrics} />
+          <ConfigTree config={config} metrics={metrics} tenantId={tenantId} configId={configId} />
         </div>
         <div className="space-y-6">
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg transition-smooth">
@@ -93,7 +107,7 @@ export default function Dashboard() {
             <h2 className="text-2xl font-semibold mb-4 text-gray-800 dark:text-gray-100">
               Cache Metrics
             </h2>
-            <CacheMetrics metrics={metrics} />
+            <CacheMetrics metrics={metrics} tenantId={tenantId} />
           </div>
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg transition-smooth">
             <h2 className="text-2xl font-semibold mb-4 text-gray-800 dark:text-gray-100">

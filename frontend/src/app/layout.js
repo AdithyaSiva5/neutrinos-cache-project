@@ -9,8 +9,8 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body className="min-h-screen antialiased">
-        <header className="bg-blue-600 dark:bg-blue-800 text-white p-4 flex justify-between items-center shadow-md">
+      <body className="min-h-screen bg-gray-50 dark:bg-gray-900 antialiased">
+        <header className="bg-blue-600 dark:bg-blue-800 text-white p-4 flex justify-between items-center shadow-lg">
           <h1 className="text-2xl font-bold tracking-tight">Neutrinos Config Dashboard</h1>
           <ThemeSwitcher />
         </header>

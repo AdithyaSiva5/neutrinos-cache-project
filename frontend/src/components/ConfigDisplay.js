@@ -1,37 +1,36 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { fetchConfig } from '@/lib/api';
 
-const ConfigDisplay = () => {
+const ConfigDisplay = ({ tenantId, configId }) => {
   const [config, setConfig] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    const fetchConfig = async () => {
+    const loadConfig = async () => {
       try {
-        const response = await fetch('http://localhost:3000/api/T1/C1');
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(data.error || 'Failed to fetch config');
-        }
-        setConfig(data.config);
+        const { config } = await fetchConfig(tenantId, configId);
+        setConfig(config);
       } catch (err) {
-        console.error('Fetch config error:', err);
+        console.error('Config fetch error:', err);
         setError(err.message);
       }
     };
-    fetchConfig();
-  }, []);
+    loadConfig();
+  }, [tenantId, configId]);
 
-  if (error) return <div>Error: {error}</div>;
-  if (!config) return <div>Loading...</div>;
+  if (error) return <div className="text-red-500">Error: {error}</div>;
+  if (!config) return <div className="text-gray-500">Loading...</div>;
 
   return (
-    <div>
-      <h2>JSON Tree Visualization</h2>
-      <pre>{JSON.stringify(config, null, 2)}</pre>
+    <div className="space-y-2">
+      <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">JSON Tree Visualization</h2>
+      <pre className="bg-gray-100 dark:bg-gray-800 p-4 rounded-lg overflow-x-auto">
+        {JSON.stringify(config, null, 2)}
+      </pre>
     </div>
   );
 };
 
-export default ConfigDisplay;   
+export default ConfigDisplay;

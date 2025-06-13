@@ -5,14 +5,23 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
+const chalk = require('chalk');
 
 const app = express();
 const server = http.createServer(app);
 
-// Utility function to log with timestamp
-const log = (context, message, data = null) => {
+const log = (context, message, data = null, level = 'info') => {
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${context}: ${message}${data ? ` - Data: ${JSON.stringify(data)}` : ''}`);
+  const colors = {
+    info: chalk.blue,
+    success: chalk.green,
+    warn: chalk.yellow,
+    error: chalk.red,
+  };
+  const color = colors[level] || chalk.blue;
+  console.log(
+    color(`[${timestamp}] ${context}: ${message}${data ? ` - ${JSON.stringify(data)}` : ''}`)
+  );
 };
 
 app.use(cors({
@@ -30,14 +39,16 @@ const io = socketIo(server, {
   },
   pingTimeout: 60000,
   pingInterval: 25000,
+  maxHttpBufferSize: 1e8,
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '10kb' }));
 
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each tenant to 100 requests
-  keyGenerator: (req) => req.params.tenantId,
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  keyGenerator: (req) => `${req.params.tenantId}:${req.ip}`,
+  message: 'Too many requests, please try again later.',
 });
 
 app.use('/api/:tenantId/:configId', limiter);
@@ -46,226 +57,238 @@ const pool = new Pool({
   user: 'postgres',
   host: 'localhost',
   database: 'configs',
-  password: 'GPY0VDtPc2zkWrF', // Replace with secure password
+  password: 'GPY0VDtPc2zkWrF',
   port: 5432,
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
-log('Server Init', 'PostgreSQL pool initialized');
+log('Server Init', 'PostgreSQL pool initialized', null, 'success');
 
-const redis = new Redis({ host: process.env.REDIS_HOST || 'localhost', port: 6379 });
+const redis = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: 6379,
+  maxRetriesPerRequest: 3,
+  retryStrategy: (times) => Math.min(times * 50, 2000),
+});
 
-const redisSubscriber = new Redis({ host: process.env.REDIS_HOST || 'localhost', port: 6379 });
+const redisSubscriber = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: 6379,
+});
 
-log('Server Init', 'Redis client initialized');
+log('Server Init', 'Redis clients initialized', null, 'success');
 
-let updateBatch = [];
+let updateBatch = {};
 
 setInterval(() => {
-  if (updateBatch.length > 0) {
-    const channel = 'T1:C1:updates';
-    log('Batch Update', `Sending ${updateBatch.length} updates to channel ${channel}`, updateBatch);
-    io.to(channel).emit('update', updateBatch);
-    updateBatch = [];
-  }
-}, 1000);
+  Object.keys(updateBatch).forEach((channel) => {
+    if (!Array.isArray(updateBatch[channel])) {
+      updateBatch[channel] = []; // Initialize as array if not set
+    }
+    if (updateBatch[channel].length > 0) {
+      log('Batch Update', `Sending ${updateBatch[channel].length} updates to ${channel}`, null, 'success');
+      io.to(channel).emit('update', updateBatch[channel]);
+      updateBatch[channel] = [];
+    }
+  });
+}, 500);
 
 async function cacheNode(tenantId, configId, nodePath, value, version) {
-  log('cacheNode', `Starting for tenant:${tenantId}, config:${configId}, path:${nodePath}`);
   const key = `tenant:${tenantId}:config:${configId}:node:${nodePath}`;
   try {
-    log('cacheNode', `Setting Redis key ${key} with value ${value} and version ${version}`);
-    const setResult = await redis.setex(key, 3600, JSON.stringify({ value, version }));
-    log('cacheNode', `Redis setex result for ${key}`, setResult);
-    const saddResult = await redis.sadd(`tenant:${tenantId}:config:${configId}:cached_nodes`, nodePath);
-    log('cacheNode', `Redis sadd result for ${nodePath}`, saddResult);
+    const pipeline = redis.pipeline();
+    pipeline.setex(key, 3600, JSON.stringify({ value, version }));
+    pipeline.sadd(`tenant:${tenantId}:config:${configId}:cached_nodes`, nodePath);
+    const results = await pipeline.exec();
+    log('cacheNode', `Cached ${key} with version ${version}`, results, 'success');
   } catch (err) {
-    log('cacheNode', `Error in cacheNode`, err);
+    log('cacheNode', `Error caching ${key}`, err, 'error');
     throw err;
   }
 }
 
 async function updateMetadata(tenantId, configId, nodePath, dependencies, version) {
-  log('updateMetadata', `Starting for tenant:${tenantId}, config:${configId}, path:${nodePath}`);
   const metadataKey = `tenant:${tenantId}:config:${configId}:metadata:${nodePath}`;
   try {
-    log('updateMetadata', `Setting metadata for ${metadataKey}`, { version, dependencies });
-    const hsetResult = await redis.hset(metadataKey, {
+    const pipeline = redis.pipeline();
+    pipeline.hset(metadataKey, {
       version,
       dependencies: JSON.stringify(dependencies || []),
       updated_at: new Date().toISOString(),
       dependents: JSON.stringify([]),
     });
-    log('updateMetadata', `Redis hset result for ${metadataKey}`, hsetResult);
-
     for (const dep of dependencies || []) {
       const depMetadataKey = `tenant:${tenantId}:config:${configId}:metadata:${dep}`;
       const currentDependents = JSON.parse((await redis.hget(depMetadataKey, 'dependents')) || '[]');
-      log('updateMetadata', `Current dependents for ${depMetadataKey}`, currentDependents);
       if (!currentDependents.includes(nodePath)) {
         currentDependents.push(nodePath);
-        const depHsetResult = await redis.hset(depMetadataKey, 'dependents', JSON.stringify(currentDependents));
-        log('updateMetadata', `Updated dependents for ${depMetadataKey}`, depHsetResult);
+        pipeline.hset(depMetadataKey, 'dependents', JSON.stringify(currentDependents));
       }
     }
+    const results = await pipeline.exec();
+    log('updateMetadata', `Updated metadata for ${metadataKey}`, results, 'success');
   } catch (err) {
-    log('updateMetadata', `Error in updateMetadata`, err);
+    log('updateMetadata', `Error updating metadata for ${metadataKey}`, err, 'error');
     throw err;
   }
 }
 
 async function invalidateNode(tenantId, configId, nodePath) {
-  log('invalidateNode', `Starting for tenant:${tenantId}, config:${configId}, path:${nodePath}`);
   const key = `tenant:${tenantId}:config:${configId}:node:${nodePath}`;
   const metadataKey = `tenant:${tenantId}:config:${configId}:metadata:${nodePath}`;
+  const channel = `${tenantId}:${configId}:updates`;
   try {
-    log('invalidateNode', `Deleting Redis key ${key}`);
-    const delResult = await redis.del(key);
-    log('invalidateNode', `Redis del result for ${key}`, delResult);
-
+    const pipeline = redis.pipeline();
+    pipeline.del(key);
     const dependencies = JSON.parse((await redis.hget(metadataKey, 'dependencies')) || '[]');
-    log('invalidateNode', `Dependencies for ${metadataKey}`, dependencies);
     for (const dep of dependencies) {
-      const depKey = `tenant:${tenantId}:config:${configId}:node:${dep}`;
-      log('invalidateNode', `Deleting dependent key ${depKey}`);
-      const depDelResult = await redis.del(depKey);
-      log('invalidateNode', `Redis del result for ${depKey}`, depDelResult);
+      pipeline.del(`tenant:${tenantId}:config:${configId}:node:${dep}`);
     }
-
+    const results = await pipeline.exec();
     const version = (await redis.hget(metadataKey, 'version')) || 'v1';
-    log('invalidateNode', `Adding to updateBatch`, { path: nodePath, action: 'invalidated', version });
-    updateBatch.push({ path: nodePath, action: 'invalidated', version });
+    if (!updateBatch[channel]) updateBatch[channel] = [];
+    updateBatch[channel].push({ path: nodePath, action: 'invalidated', version });
+    log('invalidateNode', `Invalidated ${key} and dependencies`, results, 'success');
   } catch (err) {
-    log('invalidateNode', `Error in invalidateNode`, err);
+    log('invalidateNode', `Error invalidating ${key}`, err, 'error');
     throw err;
   }
 }
 
 app.get('/api/:tenantId/:configId', async (req, res) => {
+  console.time('fetchConfigBackend');
   const { tenantId, configId } = req.params;
-  log('GET /api/:tenantId/:configId', `Request received for tenant:${tenantId}, config:${configId}`);
+  const cacheKey = `tenant:${tenantId}:config:${configId}:full`;
+  log('GET /api/:tenantId/:configId', `Request for ${tenantId}:${configId}`);
   try {
-    log('GET /api/:tenantId/:configId', `Executing query for tenant:${tenantId}, config:${configId}`);
+    const cachedConfig = await redis.get(cacheKey);
+    if (cachedConfig) {
+      log('GET /api/:tenantId/:configId', `Cache hit for ${cacheKey}`, null, 'success');
+      console.timeEnd('fetchConfigBackend');
+      return res.json({ config: JSON.parse(cachedConfig) });
+    }
+    log('GET /api/:tenantId/:configId', `Cache miss, querying DB`);
     const result = await pool.query(
-      'SELECT path, value FROM configs WHERE tenant_id = $1 AND config_id = $2',
+      'SELECT path, value FROM configs WHERE tenant_id = $1 AND config_id = $2 ORDER BY path',
       [tenantId, configId]
     );
-    log('GET /api/:tenantId/:configId', `Query result`, result);
-    if (!result || typeof result.rows === 'undefined') {
-      throw new Error('Invalid query result');
-    }
     const config = {};
-    log('GET /api/:tenantId/:configId', `Processing ${result.rows.length} rows`);
     result.rows.forEach(row => {
       const keys = row.path.split('/').filter(k => k);
       let current = config;
       for (let i = 0; i < keys.length - 1; i++) {
-        if (!current[keys[i]]) {
-          current[keys[i]] = {};
-        }
+        current[keys[i]] = current[keys[i]] || {};
         current = current[keys[i]];
       }
-      // Store the value under a 'value' key if it's a leaf node
-      if (typeof current[keys[keys.length - 1]] === 'object') {
-        current[keys[keys.length - 1]].value = row.value;
-      } else {
-        current[keys[keys.length - 1]] = { value: row.value };
-      }
-      log('GET /api/:tenantId/:configId', `Processed row`, { path: row.path, value: row.value });
+      current[keys[keys.length - 1]] = { value: row.value };
     });
-    log('GET /api/:tenantId/:configId', `Sending response`, config);
+    await redis.setex(cacheKey, 3600, JSON.stringify(config));
+    log('GET /api/:tenantId/:configId', `Cached and returning config`, null, 'success');
+    console.timeEnd('fetchConfigBackend');
     res.json({ config });
   } catch (err) {
-    log('GET /api/:tenantId/:configId', `Error fetching config`, err);
+    log('GET /api/:tenantId/:configId', `Error`, err, 'error');
+    console.timeEnd('fetchConfigBackend');
     res.status(500).json({ error: `Failed to fetch config: ${err.message}` });
   }
 });
 
 app.post('/api/:tenantId/:configId', async (req, res) => {
+  console.time('updateConfigBackend');
   const { tenantId, configId } = req.params;
   const { path, value, dependencies } = req.body;
-  log('POST /api/:tenantId/:configId', `Request received`, { tenantId, configId, path, value, dependencies });
-
+  log('POST /api/:tenantId/:configId', `Request`, { path, value, dependencies });
   if (!path.startsWith('/')) {
-    log('POST /api/:tenantId/:configId', `Invalid path: ${path}`);
+    log('POST /api/:tenantId/:configId', `Invalid path`, null, 'error');
+    console.timeEnd('updateConfigBackend');
     return res.status(400).json({ error: 'Path must start with /' });
   }
-
   try {
-    log('POST /api/:tenantId/:configId', `Inserting/updating config`, { tenantId, configId, path, value });
-    const queryResult = await pool.query(
-      'INSERT INTO configs (tenant_id, config_id, path, value, updated_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, config_id, path) DO UPDATE SET value = $4, updated_at = $5',
-      [tenantId, configId, path, value, new Date()]
-    );
-    log('POST /api/:tenantId/:configId', `Query result`, queryResult);
-
-    const version = `v${Date.now()}`;
-    log('POST /api/:tenantId/:configId', `Caching node with version ${version}`);
-    await cacheNode(tenantId, configId, path, value, version);
-    log('POST /api/:tenantId/:configId', `Updating metadata`);
-    await updateMetadata(tenantId, configId, path, dependencies, version);
-    log('POST /api/:tenantId/:configId', `Invalidating node`);
-    await invalidateNode(tenantId, configId, path);
-
-    log('POST /api/:tenantId/:configId', `Sending success response`);
-    res.json({ status: 'updated' });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'INSERT INTO configs (tenant_id, config_id, path, value, updated_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, config_id, path) DO UPDATE SET value = $4, updated_at = $5',
+        [tenantId, configId, path, value, new Date()]
+      );
+      const version = `v${Date.now()}`;
+      await cacheNode(tenantId, configId, path, value, version);
+      await updateMetadata(tenantId, configId, path, dependencies, version);
+      await invalidateNode(tenantId, configId, path);
+      await redis.del(`tenant:${tenantId}:config:${configId}:full`);
+      await client.query('COMMIT');
+      log('POST /api/:tenantId/:configId', `Updated ${path}`, null, 'success');
+      console.timeEnd('updateConfigBackend');
+      res.json({ status: 'updated' });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   } catch (err) {
-    log('POST /api/:tenantId/:configId', `Error updating config`, err);
+    log('POST /api/:tenantId/:configId', `Error`, err, 'error');
+    console.timeEnd('updateConfigBackend');
     res.status(500).json({ error: `Failed to update config: ${err.message}` });
   }
 });
 
 app.get('/metrics/:tenantId/:configId', async (req, res) => {
+  console.time('fetchMetricsBackend');
   const { tenantId, configId } = req.params;
   const { limit = 100, offset = 0 } = req.query;
-  log('GET /metrics/:tenantId/:configId', `Request received`, { tenantId, configId, limit, offset });
+  log('GET /metrics/:tenantId/:configId', `Request`, { limit, offset });
   try {
-    log('GET /metrics/:tenantId/:configId', `Fetching cached nodes`);
     const cachedNodes = await redis.smembers(`tenant:${tenantId}:config:${configId}:cached_nodes`);
-    log('GET /metrics/:tenantId/:configId', `Cached nodes`, cachedNodes);
     const paginatedNodes = cachedNodes.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
-    log('GET /metrics/:tenantId/:configId', `Paginated nodes`, paginatedNodes);
-    const metrics = await Promise.all(
-      paginatedNodes.map(async node => {
-        log('GET /metrics/:tenantId/:configId', `Fetching metadata for ${node}`);
-        const metadata = await redis.hgetall(`tenant:${tenantId}:config:${configId}:metadata:${node}`);
-        metadata.dependencies = JSON.parse(metadata.dependencies || '[]');
-        metadata.dependents = JSON.parse(metadata.dependents || '[]');
-        log('GET /metrics/:tenantId/:configId', `Metadata for ${node}`, metadata);
-        return { path: node, metadata };
-      })
-    );
-    log('GET /metrics/:tenantId/:configId', `Sending response`, { cachedNodes: paginatedNodes, metrics });
+    const pipeline = redis.pipeline();
+    paginatedNodes.forEach(node => {
+      pipeline.hgetall(`tenant:${tenantId}:config:${configId}:metadata:${node}`);
+    });
+    const results = await pipeline.exec();
+    const metrics = results.map(([err, metadata], i) => {
+      if (err) throw err;
+      return {
+        path: paginatedNodes[i],
+        metadata: {
+          ...metadata,
+          dependencies: JSON.parse(metadata.dependencies || '[]'),
+          dependents: JSON.parse(metadata.dependents || '[]'),
+        },
+      };
+    });
+    log('GET /metrics/:tenantId/:configId', `Returning ${metrics.length} metrics`, null, 'success');
+    console.timeEnd('fetchMetricsBackend');
     res.json({ cachedNodes: paginatedNodes, metrics });
   } catch (err) {
-    log('GET /metrics/:tenantId/:configId', `Error fetching metrics`, err);
+    log('GET /metrics/:tenantId/:configId', `Error`, err, 'error');
+    console.timeEnd('fetchMetricsBackend');
     res.status(500).json({ error: err.message });
   }
 });
 
-// redis.subscribe('T1:C1:updates');
-// redis.on('message', (channel, message) => {
-//   log('Redis', `Received message on ${channel}`, message);
-// });
-// Use the subscriber client for subscriptions
-redisSubscriber.subscribe('T1:C1:updates');
+redisSubscriber.subscribe('updates');
 redisSubscriber.on('message', (channel, message) => {
-  log('Redis', `Received message on ${channel}`, message);
+  log('Redis', `Message on ${channel}`, message, 'info');
 });
 
 io.on('connection', (socket) => {
-  log('Socket.IO', `New socket connection: ${socket.id}`);
-  socket.setMaxListeners(10);
+  log('Socket.IO', `Connected: ${socket.id}`, null, 'success');
+  socket.setMaxListeners(15);
   socket.on('join', ({ tenantId, configId }) => {
     const channel = `${tenantId}:${configId}:updates`;
     socket.join(channel);
-    log('Socket.IO', `Client ${socket.id} joined ${channel}`);
+    log('Socket.IO', `${socket.id} joined ${channel}`, null, 'info');
+  });
+  socket.on('disconnect', () => {
+    log('Socket.IO', `Disconnected: ${socket.id}`, null, 'warn');
   });
 });
 
-// Export for testing
 module.exports = { app, cacheNode, invalidateNode, updateMetadata };
 
-// Only start server if not in test environment
 if (process.env.NODE_ENV !== 'test') {
-  server.listen(3000, () => log('Server', 'Server running on port 3000'));
+  server.listen(3000, () => log('Server', 'Running on port 3000', null, 'success'));
 }
