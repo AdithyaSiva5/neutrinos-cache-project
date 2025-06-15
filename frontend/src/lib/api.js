@@ -7,9 +7,9 @@ const instance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-export const fetchConfig = async (tenantId, configId) => {
+export const fetchConfig = async (tenantId, configId, path = null) => {
   try {
-    const response = await instance.get(`/api/${tenantId}/${configId}`);
+    const response = await instance.get(`/api/${tenantId}/${configId}${path ? `?path=${encodeURIComponent(path)}` : ''}`);
     return response.data;
   } catch (error) {
     throw new Error(error.response?.data?.error || 'Failed to fetch config');

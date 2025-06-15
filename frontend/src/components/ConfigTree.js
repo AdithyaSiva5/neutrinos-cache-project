@@ -8,17 +8,29 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
   const svgRef = useRef();
   const depSvgRef = useRef();
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [hasInitialized, setHasInitialized] = useState(false);
+  
   const memoizedConfig = useMemo(() => config, [JSON.stringify(config)]);
   const memoizedMetrics = useMemo(() => metrics, [JSON.stringify(metrics)]);
 
+  // Better validation for tenant and config IDs
+  const isValidInput = (tenantId, configId) => {
+    return tenantId && configId && 
+           /^[A-Za-z0-9]+$/.test(tenantId) && 
+           /^[A-Za-z0-9]+$/.test(configId);
+  };
+
   // Convert flat config object to hierarchical structure for D3 tree
-  const convertToHierarchy = (configObj) => {
-    if (!configObj || Object.keys(configObj).length === 0) {
+  const convertToHierarchy = (configObj, tenantId, configId) => {
+    // Validate inputs first
+    if (!isValidInput(tenantId, configId)) {
       return {
-        name: `${tenantId}:${configId}`,
+        name: `${tenantId || 'Invalid'}:${configId || 'Invalid'}`,
         path: '/',
         children: [],
-        isEmpty: true
+        isError: true,
+        errorType: 'invalid_ids'
       };
     }
 
@@ -28,8 +40,28 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       children: []
     };
 
+    // Handle null, undefined, or empty config
+    if (!configObj) {
+      return {
+        ...root,
+        isEmpty: true,
+        isLoading: true // This indicates we're still waiting for data
+      };
+    }
+
+    // Handle empty object but not null (meaning we got a response but no data)
+    if (typeof configObj === 'object' && Object.keys(configObj).length === 0) {
+      return {
+        ...root,
+        isEmpty: true,
+        isLoading: false // This indicates we got an empty response
+      };
+    }
+
     // Recursively build tree structure
     const buildNode = (obj, parentPath = '', parentNode) => {
+      if (!obj || typeof obj !== 'object') return;
+
       Object.keys(obj).forEach(key => {
         const currentPath = parentPath === '/' ? `/${key}` : `${parentPath}/${key}`;
         const value = obj[key];
@@ -59,8 +91,18 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       });
     };
 
-    buildNode(configObj, '/', root);
-    return root;
+    try {
+      buildNode(configObj, '/', root);
+      return root;
+    } catch (error) {
+      console.error('Error building hierarchy:', error);
+      return {
+        ...root,
+        isError: true,
+        errorType: 'build_error',
+        errorMessage: error.message
+      };
+    }
   };
 
   // Check if a node is cached based on metrics
@@ -91,17 +133,79 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       // Clear previous content
       svg.selectAll('*').remove();
 
-      const hierarchicalData = convertToHierarchy(memoizedConfig);
+      const hierarchicalData = convertToHierarchy(memoizedConfig, tenantId, configId);
       
-      // Handle empty state
-      if (hierarchicalData.isEmpty) {
+      // Handle error states
+      if (hierarchicalData.isError) {
+        const g = svg.append('g').attr('transform', 'translate(50, 50)');
+        
+        if (hierarchicalData.errorType === 'invalid_ids') {
+          g.append('text')
+            .attr('x', 0)
+            .attr('y', 0)
+            .style('font-size', '16px')
+            .style('fill', '#dc2626')
+            .text('Invalid Tenant ID or Config ID');
+          
+          g.append('text')
+            .attr('x', 0)
+            .attr('y', 25)
+            .style('font-size', '14px')
+            .style('fill', '#999')
+            .text('Tenant ID and Config ID must be alphanumeric (e.g., T1, C1)');
+        } else {
+          g.append('text')
+            .attr('x', 0)
+            .attr('y', 0)
+            .style('font-size', '16px')
+            .style('fill', '#dc2626')
+            .text('Error loading configuration');
+          
+          g.append('text')
+            .attr('x', 0)
+            .attr('y', 25)
+            .style('font-size', '14px')
+            .style('fill', '#999')
+            .text(hierarchicalData.errorMessage || 'Please try again');
+        }
+        
+        setError(hierarchicalData.errorType === 'invalid_ids' ? 'Invalid tenant or config ID' : 'Error loading data');
+        setIsLoading(false);
+        return;
+      }
+
+      // Handle loading state (when config is null/undefined)
+      if (hierarchicalData.isLoading) {
         const g = svg.append('g').attr('transform', 'translate(50, 50)');
         
         g.append('text')
           .attr('x', 0)
           .attr('y', 0)
           .style('font-size', '16px')
-          .style('fill', '#666')
+          .style('fill', '#6b7280')
+          .text(`Loading configuration for ${tenantId}:${configId}...`);
+        
+        g.append('text')
+          .attr('x', 0)
+          .attr('y', 25)
+          .style('font-size', '14px')
+          .style('fill', '#999')
+          .text('Please wait while we fetch the data');
+        
+        setError(null);
+        // Keep isLoading true
+        return;
+      }
+
+      // Handle empty state (when we got a response but no data)
+      if (hierarchicalData.isEmpty && !hierarchicalData.isLoading) {
+        const g = svg.append('g').attr('transform', 'translate(50, 50)');
+        
+        g.append('text')
+          .attr('x', 0)
+          .attr('y', 0)
+          .style('font-size', '16px')
+          .style('fill', '#6b7280')
           .text(`No configuration data for ${tenantId}:${configId}`);
         
         g.append('text')
@@ -109,47 +213,56 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           .attr('y', 25)
           .style('font-size', '14px')
           .style('fill', '#999')
-          .text('Try updating some configuration values to see the tree structure.');
+          .text('Add some configuration values using the update form below');
         
+        g.append('text')
+          .attr('x', 0)
+          .attr('y', 50)
+          .style('font-size', '12px')
+          .style('fill', '#999')
+          .text('Example: Path "/settings/theme/color" with value "blue"');
+        
+        setError(null);
         setIsLoading(false);
         return;
       }
+
+      // If we have actual data, clear error and loading states
+      setError(null);
+      setIsLoading(false);
 
       const root = d3.hierarchy(hierarchicalData);
       const treeLayout = d3.tree().size([width - 200, height - 100]);
       treeLayout(root);
 
-      const g = svg.append('g').attr('transform', 'translate(100, 50)');
+      const g = svg.selectAll('g.tree').data([0]).join('g').attr('class', 'tree').attr('transform', 'translate(100, 50)');
 
-      // Create links between nodes
-      if (root.links().length > 0) {
-        g.selectAll('.link')
-          .data(root.links())
-          .enter()
-          .append('path')
-          .attr('class', 'link')
-          .attr('d', d3.linkVertical()
-            .x(d => d.x)
-            .y(d => d.y)
-          )
-          .attr('fill', 'none')
-          .attr('stroke', '#ccc')
-          .attr('stroke-width', 2)
-          .style('opacity', 0.7);
-      }
+      // Update links
+      const links = g.selectAll('.link')
+        .data(root.links(), d => `${d.source.data.path}-${d.target.data.path}`)
+        .join('path')
+        .attr('class', 'link')
+        .attr('d', d3.linkVertical()
+          .x(d => d.x)
+          .y(d => d.y)
+        )
+        .attr('fill', 'none')
+        .attr('stroke', '#ccc')
+        .attr('stroke-width', 2)
+        .style('opacity', 0.7);
 
-      // Create node groups
+      // Update nodes
       const nodeGroups = g.selectAll('.node')
-        .data(root.descendants())
-        .enter()
-        .append('g')
+        .data(root.descendants(), d => d.data.path)
+        .join('g')
         .attr('class', 'node')
         .attr('transform', d => `translate(${d.x},${d.y})`)
         .style('cursor', 'pointer');
 
       // Add circles for nodes
-      nodeGroups
-        .append('circle')
+      nodeGroups.selectAll('circle')
+        .data(d => [d])
+        .join('circle')
         .attr('r', d => d.data.isLeaf ? 8 : 12)
         .attr('fill', d => {
           if (!d.data.path || d.data.path === '/') return '#64748b'; // Root node
@@ -190,8 +303,10 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         });
 
       // Add node labels
-      nodeGroups
-        .append('text')
+      nodeGroups.selectAll('text.name')
+        .data(d => [d])
+        .join('text')
+        .attr('class', 'name')
         .attr('dy', d => d.children ? -20 : 25)
         .attr('text-anchor', 'middle')
         .style('font-size', '12px')
@@ -200,9 +315,10 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .text(d => d.data.name);
 
       // Add value labels for leaf nodes
-      nodeGroups
-        .filter(d => d.data.value !== undefined)
-        .append('text')
+      nodeGroups.selectAll('text.value')
+        .data(d => d.data.value !== undefined ? [d] : [])
+        .join('text')
+        .attr('class', 'value')
         .attr('dy', 40)
         .attr('text-anchor', 'middle')
         .style('font-size', '10px')
@@ -214,9 +330,10 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         );
 
       // Add cache indicators
-      nodeGroups
-        .filter(d => isNodeCached(d.data.path))
-        .append('circle')
+      nodeGroups.selectAll('circle.cache-indicator')
+        .data(d => isNodeCached(d.data.path) ? [d] : [])
+        .join('circle')
+        .attr('class', 'cache-indicator')
         .attr('r', 4)
         .attr('cx', 15)
         .attr('cy', -15)
@@ -225,9 +342,12 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .attr('stroke-width', 1)
         .style('opacity', 0.9);
 
-      setIsLoading(false);
+      // Mark as initialized
+      if (!hasInitialized) {
+        setHasInitialized(true);
+      }
     }, 300),
-    [memoizedConfig, memoizedMetrics, tenantId, configId]
+    [memoizedConfig, memoizedMetrics, tenantId, configId, hasInitialized]
   );
 
   const renderDependencyMap = useMemo(
@@ -352,6 +472,28 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
     [memoizedMetrics]
   );
 
+  // Reset loading state when tenantId or configId changes
+  useEffect(() => {
+    setIsLoading(true);
+    setError(null);
+    setHasInitialized(false);
+  }, [tenantId, configId]);
+
+  // Set a timeout to detect if we're really loading vs no data
+  useEffect(() => {
+    if (isLoading && hasInitialized) {
+      const timer = setTimeout(() => {
+        // If we're still loading after 5 seconds and haven't initialized, show error
+        if (!memoizedConfig && isLoading) {
+          setError('Failed to load configuration data');
+          setIsLoading(false);
+        }
+      }, 5000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [isLoading, hasInitialized, memoizedConfig]);
+
   useEffect(() => {
     renderTree();
     renderDependencyMap();
@@ -370,11 +512,26 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           ref={svgRef} 
           className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900"
         />
-        {isLoading && (
+        {isLoading && !error && (
           <div className="absolute inset-0 flex items-center justify-center bg-white/80 dark:bg-gray-900/80">
             <div className="text-center">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-2"></div>
-              <div className="text-gray-500 dark:text-gray-400">Loading tree...</div>
+              <div className="text-gray-500 dark:text-gray-400">
+                Loading configuration for {tenantId}:{configId}...
+              </div>
+            </div>
+          </div>
+        )}
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white/80 dark:bg-gray-900/80">
+            <div className="text-center">
+              <div className="text-red-500 dark:text-red-400 mb-2">⚠️</div>
+              <div className="text-red-600 dark:text-red-400 font-medium">
+                {error}
+              </div>
+              <div className="text-gray-500 dark:text-gray-400 text-sm mt-1">
+                Please check your tenant and config IDs
+              </div>
             </div>
           </div>
         )}
@@ -406,6 +563,25 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           </div>
         </div>
       </div>
+
+      {/* Status Information */}
+      {!isLoading && !error && (
+        <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg">
+          <div className="text-sm text-blue-700 dark:text-blue-300">
+            <strong>Current View:</strong> {tenantId}:{configId}
+            {memoizedConfig && Object.keys(memoizedConfig).length > 0 && (
+              <span className="ml-2">
+                • {Object.keys(memoizedConfig).length} top-level section{Object.keys(memoizedConfig).length !== 1 ? 's' : ''}
+              </span>
+            )}
+            {memoizedMetrics.length > 0 && (
+              <span className="ml-2">
+                • {memoizedMetrics.length} cached node{memoizedMetrics.length !== 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Dependency Map */}
       {memoizedMetrics.length > 0 && (

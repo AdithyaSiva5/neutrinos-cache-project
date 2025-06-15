@@ -6,6 +6,7 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const chalk = require('chalk');
+const prom = require('prom-client');
 
 const app = express();
 const server = http.createServer(app);
@@ -109,6 +110,26 @@ redisSubscriber.on('pmessage', (pattern, channel, message) => {
 let cacheHits = 0;
 let cacheMisses = 0;
 
+// Prometheus metrics
+const register = new prom.Registry();
+const apiLatency = new prom.Histogram({
+  name: 'api_request_latency_seconds',
+  help: 'API request latency in seconds',
+  labelNames: ['endpoint', 'method'],
+  buckets: [0.1, 0.5, 1, 2, 5],
+  registers: [register],
+});
+const cacheHitRatio = new prom.Gauge({
+  name: 'cache_hit_ratio',
+  help: 'Cache hit ratio',
+  registers: [register],
+});
+
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
+});
+
 async function cacheNode(tenantId, configId, nodePath, value, version) {
   const key = `tenant:${tenantId}:config:${configId}:node:${nodePath}`;
   const pipeline = redis.pipeline();
@@ -174,29 +195,32 @@ async function invalidateNode(tenantId, configId, nodePath, userId) {
 }
 
 app.get('/api/:tenantId/:configId', async (req, res) => {
-  console.time('fetchConfigBackend');
+  const end = apiLatency.startTimer({ endpoint: '/api/:tenantId/:configId', method: 'GET' });
   const { tenantId, configId } = req.params;
+  const { path } = req.query;
   if (!/^[A-Za-z0-9]+$/.test(tenantId) || !/^[A-Za-z0-9]+$/.test(configId)) {
     log('GET /api/:tenantId/:configId', `Invalid tenantId or configId`, { tenantId, configId }, 'error');
-    console.timeEnd('fetchConfigBackend');
+    end();
     return res.status(400).json({ error: 'Tenant ID and Config ID must be alphanumeric' });
   }
-  const cacheKey = `tenant:${tenantId}:config:${configId}:full`;
-  log('GET /api/:tenantId/:configId', `Request for ${tenantId}:${configId}`);
+  const cacheKey = `tenant:${tenantId}:config:${configId}:full${path ? `:${path}` : ''}`;
+  log('GET /api/:tenantId/:configId', `Request for ${tenantId}:${configId}${path ? ` path=${path}` : ''}`);
   try {
     const cachedConfig = await redis.get(cacheKey);
     if (cachedConfig) {
       cacheHits++;
       log('GET /api/:tenantId/:configId', `Cache hit for ${cacheKey}`, null, 'success');
-      console.timeEnd('fetchConfigBackend');
+      cacheHitRatio.set(cacheHits / (cacheHits + cacheMisses || 1));
+      end();
       return res.json({ config: JSON.parse(cachedConfig) });
     }
     cacheMisses++;
     log('GET /api/:tenantId/:configId', `Cache miss, querying DB`);
-    const result = await pool.query(
-      'SELECT path, value FROM configs WHERE tenant_id = $1 AND config_id = $2 ORDER BY path',
-      [tenantId, configId]
-    );
+    const query = path
+      ? 'SELECT path, value FROM configs WHERE tenant_id = $1 AND config_id = $2 AND path LIKE $3 ORDER BY path'
+      : 'SELECT path, value FROM configs WHERE tenant_id = $1 AND config_id = $2 ORDER BY path';
+    const params = path ? [tenantId, configId, path + '%'] : [tenantId, configId];
+    const result = await pool.query(query, params);
     const config = {};
     result.rows.forEach(row => {
       const keys = row.path.split('/').filter(k => k);
@@ -209,28 +233,29 @@ app.get('/api/:tenantId/:configId', async (req, res) => {
     });
     await redis.setex(cacheKey, 3600, JSON.stringify(config));
     log('GET /api/:tenantId/:configId', `Cached and returning config`, null, 'success');
-    console.timeEnd('fetchConfigBackend');
+    cacheHitRatio.set(cacheHits / (cacheHits + cacheMisses || 1));
+    end();
     res.json({ config });
   } catch (err) {
     log('GET /api/:tenantId/:configId', `Error: ${err.message}`, err.stack, 'error');
-    console.timeEnd('fetchConfigBackend');
+    end();
     res.status(500).json({ error: `Failed to fetch config: ${err.message}` });
   }
 });
 
 app.post('/api/:tenantId/:configId', async (req, res) => {
-  console.time('updateConfigBackend');
+  const end = apiLatency.startTimer({ endpoint: '/api/:tenantId/:configId', method: 'POST' });
   const { tenantId, configId } = req.params;
   const { path, value, dependencies, userId } = req.body;
   if (!/^[A-Za-z0-9]+$/.test(tenantId) || !/^[A-Za-z0-9]+$/.test(configId)) {
     log('POST /api/:tenantId/:configId', `Invalid tenantId or configId`, { tenantId, configId }, 'error');
-    console.timeEnd('updateConfigBackend');
+    end();
     return res.status(400).json({ error: 'Tenant ID and Config ID must be alphanumeric' });
   }
   log('POST /api/:tenantId/:configId', `Request by ${userId || 'Unknown'}`, { path, value, dependencies });
   if (!path.startsWith('/')) {
     log('POST /api/:tenantId/:configId', `Invalid path`, null, 'error');
-    console.timeEnd('updateConfigBackend');
+    end();
     return res.status(400).json({ error: 'Path must start with /' });
   }
   try {
@@ -245,10 +270,21 @@ app.post('/api/:tenantId/:configId', async (req, res) => {
       await cacheNode(tenantId, configId, path, value, version);
       await updateMetadata(tenantId, configId, path, dependencies, version);
       await invalidateNode(tenantId, configId, path, userId);
-      await redis.del(`tenant:${tenantId}:config:${configId}:full`);
+      // Update full config cache incrementally
+      const cacheKey = `tenant:${tenantId}:config:${configId}:full`;
+      const cachedConfig = await redis.get(cacheKey);
+      let config = cachedConfig ? JSON.parse(cachedConfig) : {};
+      const keys = path.split('/').filter(k => k);
+      let current = config;
+      for (let i = 0; i < keys.length - 1; i++) {
+        current[keys[i]] = current[keys[i]] || {};
+        current = current[keys[i]];
+      }
+      current[keys[keys.length - 1]] = { value };
+      await redis.setex(cacheKey, 3600, JSON.stringify(config));
       await client.query('COMMIT');
       log('POST /api/:tenantId/:configId', `Updated ${path}`, null, 'success');
-      console.timeEnd('updateConfigBackend');
+      end();
       res.json({ status: 'updated' });
     } catch (err) {
       await client.query('ROLLBACK');
@@ -259,18 +295,18 @@ app.post('/api/:tenantId/:configId', async (req, res) => {
     }
   } catch (err) {
     log('POST /api/:tenantId/:configId', `Error: ${err.message}`, err.stack, 'error');
-    console.timeEnd('updateConfigBackend');
+    end();
     res.status(500).json({ error: `Failed to update config: ${err.message}` });
   }
 });
 
 app.get('/metrics/:tenantId/:configId', async (req, res) => {
-  console.time('fetchMetricsBackend');
+  const end = apiLatency.startTimer({ endpoint: '/metrics/:tenantId/:configId', method: 'GET' });
   const { tenantId, configId } = req.params;
   const { limit = 100, offset = 0 } = req.query;
   if (!/^[A-Za-z0-9]+$/.test(tenantId) || !/^[A-Za-z0-9]+$/.test(configId)) {
     log('GET /metrics/:tenantId/:configId', `Invalid tenantId or configId`, { tenantId, configId }, 'error');
-    console.timeEnd('fetchMetricsBackend');
+    end();
     return res.status(400).json({ error: 'Tenant ID and Config ID must be alphanumeric' });
   }
   log('GET /metrics/:tenantId/:configId', `Request`, { limit, offset });
@@ -294,11 +330,12 @@ app.get('/metrics/:tenantId/:configId', async (req, res) => {
       };
     });
     log('GET /metrics/:tenantId/:configId', `Returning ${metrics.length} metrics`, null, 'success');
-    console.timeEnd('fetchMetricsBackend');
+    cacheHitRatio.set(cacheHits / (cacheHits + cacheMisses || 1));
+    end();
     res.json({ cachedNodes, metrics, cacheStats: { hits: cacheHits, misses: cacheMisses } });
   } catch (err) {
     log('GET /metrics/:tenantId/:configId', `Error: ${err.message}`, err.stack, 'error');
-    console.timeEnd('fetchMetricsBackend');
+    end();
     res.status(500).json({ error: err.message });
   }
 });
