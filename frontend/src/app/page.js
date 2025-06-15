@@ -26,7 +26,7 @@ export default function Dashboard() {
 
   const updateConfigAndMetrics = useCallback(() => {
     console.time('fetchConfigFrontend');
-    fetchConfig(tenantId, configId, '/settings') // Fetch only /settings subtree for faster loads
+    fetchConfig(tenantId, configId) // Remove path parameter to fetch full config
       .then((data) => {
         setConfig(data.config || {});
         console.timeEnd('fetchConfigFrontend');

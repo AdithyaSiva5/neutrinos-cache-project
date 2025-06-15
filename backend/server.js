@@ -1,3 +1,5 @@
+// backend\server.js
+
 const express = require('express');
 const { Pool } = require('pg');
 const Redis = require('ioredis');
@@ -272,8 +274,27 @@ app.post('/api/:tenantId/:configId', async (req, res) => {
       await invalidateNode(tenantId, configId, path, userId);
       // Update full config cache incrementally
       const cacheKey = `tenant:${tenantId}:config:${configId}:full`;
+      let config = {};
       const cachedConfig = await redis.get(cacheKey);
-      let config = cachedConfig ? JSON.parse(cachedConfig) : {};
+      if (cachedConfig) {
+        config = JSON.parse(cachedConfig);
+      } else {
+        // Fetch from DB if cache miss to ensure consistency
+        const result = await pool.query(
+          'SELECT path, value FROM configs WHERE tenant_id = $1 AND config_id = $2 ORDER BY path',
+          [tenantId, configId]
+        );
+        result.rows.forEach(row => {
+          const keys = row.path.split('/').filter(k => k);
+          let current = config;
+          for (let i = 0; i < keys.length - 1; i++) {
+            current[keys[i]] = current[keys[i]] || {};
+            current = current[keys[i]];
+          }
+          current[keys[keys.length - 1]] = { value: row.value };
+        });
+      }
+      // Merge new node into config
       const keys = path.split('/').filter(k => k);
       let current = config;
       for (let i = 0; i < keys.length - 1; i++) {
@@ -283,7 +304,7 @@ app.post('/api/:tenantId/:configId', async (req, res) => {
       current[keys[keys.length - 1]] = { value };
       await redis.setex(cacheKey, 3600, JSON.stringify(config));
       await client.query('COMMIT');
-      log('POST /api/:tenantId/:configId', `Updated ${path}`, null, 'success');
+      log('POST /api/:tenantId/:configId', `Updated ${path} and full cache`, null, 'success');
       end();
       res.json({ status: 'updated' });
     } catch (err) {

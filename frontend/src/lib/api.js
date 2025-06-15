@@ -1,3 +1,5 @@
+// frontend\src\lib\api.js
+
 import axios from 'axios';
 
 const API_BASE_URL = 'http://localhost:3000';
@@ -25,12 +27,13 @@ export const fetchMetrics = async (tenantId, configId) => {
   }
 };
 
-export const updateConfig = async (tenantId, configId, { path, value, dependencies }) => {
+export const updateConfig = async (tenantId, configId, { path, value, dependencies, userId }) => {
   try {
     const response = await instance.post(`/api/${tenantId}/${configId}`, {
       path,
       value,
       dependencies,
+      userId,
     });
     return response.data;
   } catch (error) {

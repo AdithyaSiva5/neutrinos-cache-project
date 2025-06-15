@@ -1,3 +1,5 @@
+// frontend\src\components\ConfigTree.js
+
 'use client';
 
 import { useEffect, useRef, useMemo, useState } from 'react';
@@ -343,11 +345,9 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .style('opacity', 0.9);
 
       // Mark as initialized
-      if (!hasInitialized) {
-        setHasInitialized(true);
-      }
+      setHasInitialized(true);
     }, 300),
-    [memoizedConfig, memoizedMetrics, tenantId, configId, hasInitialized]
+    [memoizedConfig, memoizedMetrics, tenantId, configId] // Removed hasInitialized from dependencies
   );
 
   const renderDependencyMap = useMemo(
