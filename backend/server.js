@@ -1,5 +1,3 @@
-// backend\server.js
-
 const express = require('express');
 const { Pool } = require('pg');
 const Redis = require('ioredis');
@@ -13,7 +11,7 @@ const prom = require('prom-client');
 const app = express();
 const server = http.createServer(app);
 
-const log = (context, message, data = null, level = 'info') => {
+const log = (context, message, data = null, level = 'info', durationMs = null) => {
   const timestamp = new Date().toISOString();
   const colors = {
     info: chalk.blue,
@@ -22,8 +20,9 @@ const log = (context, message, data = null, level = 'info') => {
     error: chalk.red,
   };
   const color = colors[level] || chalk.blue;
+  const durationStr = durationMs !== null ? ` [${durationMs.toFixed(2)}ms]` : '';
   console.log(
-    color(`[${timestamp}] ${context}: ${message}${data ? ` - ${JSON.stringify(data)}` : ''}`)
+    color(`[${timestamp}] ${context}: ${message}${durationStr}${data ? ` - ${JSON.stringify(data)}` : ''}`)
   );
 };
 
@@ -197,6 +196,7 @@ async function invalidateNode(tenantId, configId, nodePath, userId) {
 }
 
 app.get('/api/:tenantId/:configId', async (req, res) => {
+  const startTime = performance.now();
   const end = apiLatency.startTimer({ endpoint: '/api/:tenantId/:configId', method: 'GET' });
   const { tenantId, configId } = req.params;
   const { path } = req.query;
@@ -206,23 +206,25 @@ app.get('/api/:tenantId/:configId', async (req, res) => {
     return res.status(400).json({ error: 'Tenant ID and Config ID must be alphanumeric' });
   }
   const cacheKey = `tenant:${tenantId}:config:${configId}:full${path ? `:${path}` : ''}`;
-  log('GET /api/:tenantId/:configId', `Request for ${tenantId}:${configId}${path ? ` path=${path}` : ''}`);
+  log('GET /api/:tenantId/:configId', `Request for ${tenantId}:${configId}${path ? ` path=${path}` : ''}`, null, 'info');
   try {
     const cachedConfig = await redis.get(cacheKey);
     if (cachedConfig) {
       cacheHits++;
-      log('GET /api/:tenantId/:configId', `Cache hit for ${cacheKey}`, null, 'success');
+      log('GET /api/:tenantId/:configId', `Cache hit for ${cacheKey}`, null, 'success', performance.now() - startTime);
       cacheHitRatio.set(cacheHits / (cacheHits + cacheMisses || 1));
       end();
       return res.json({ config: JSON.parse(cachedConfig) });
     }
     cacheMisses++;
-    log('GET /api/:tenantId/:configId', `Cache miss, querying DB`);
+    log('GET /api/:tenantId/:configId', `Cache miss, querying DB`, null, 'warn');
     const query = path
       ? 'SELECT path, value FROM configs WHERE tenant_id = $1 AND config_id = $2 AND path LIKE $3 ORDER BY path'
       : 'SELECT path, value FROM configs WHERE tenant_id = $1 AND config_id = $2 ORDER BY path';
     const params = path ? [tenantId, configId, path + '%'] : [tenantId, configId];
+    const dbStart = performance.now();
     const result = await pool.query(query, params);
+    log('GET /api/:tenantId/:configId', `DB query completed`, null, 'success', performance.now() - dbStart);
     const config = {};
     result.rows.forEach(row => {
       const keys = row.path.split('/').filter(k => k);
@@ -234,15 +236,39 @@ app.get('/api/:tenantId/:configId', async (req, res) => {
       current[keys[keys.length - 1]] = { value: row.value };
     });
     await redis.setex(cacheKey, 3600, JSON.stringify(config));
-    log('GET /api/:tenantId/:configId', `Cached and returning config`, null, 'success');
+    log('GET /api/:tenantId/:configId', `Cached and returning config`, null, 'success', performance.now() - startTime);
     cacheHitRatio.set(cacheHits / (cacheHits + cacheMisses || 1));
     end();
     res.json({ config });
   } catch (err) {
-    log('GET /api/:tenantId/:configId', `Error: ${err.message}`, err.stack, 'error');
+    log('GET /api/:tenantId/:configId', `Error: ${err.message}`, err.stack, 'error', performance.now() - startTime);
     end();
     res.status(500).json({ error: `Failed to fetch config: ${err.message}` });
   }
+});
+
+io.on('connection', (socket) => {
+  const startTime = performance.now();
+  log('Socket.IO', `Connected: ${socket.id}`, null, 'success', performance.now() - startTime);
+  socket.setMaxListeners(15);
+  socket.on('subscribe', ({ tenantId, configId, pathPattern }) => {
+    const subStart = performance.now();
+    if (!/^[A-Za-z0-9]+$/.test(tenantId) || !/^[A-Za-z0-9]+$/.test(configId)) {
+      log('Socket.IO', `Invalid tenantId or configId in subscription`, { tenantId, configId }, 'error');
+      return;
+    }
+    const socketChannel = `${tenantId}:${configId}:updates`;
+    socket.join(socketChannel);
+    if (pathPattern) {
+      const key = `${tenantId}:${configId}:${pathPattern}`;
+      if (!subscriptionRegistry.has(key)) {
+        subscriptionRegistry.set(key, new Set());
+      }
+      subscriptionRegistry.get(key).add(socket.id);
+      log('Socket.IO', `${socket.id} subscribed to ${key}`, null, 'success', performance.now() - subStart);
+    }
+    log('Socket.IO', `${socket.id} joined ${socketChannel}`, null, 'info', performance.now() - subStart);
+  });
 });
 
 app.post('/api/:tenantId/:configId', async (req, res) => {

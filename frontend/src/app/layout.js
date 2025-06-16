@@ -31,12 +31,12 @@ export default function RootLayout({ children }) {
                   >
                     Performance
                   </Link>
-                  <Link
+                  {/* <Link
                     href="/monitoring"
                     className="text-white hover:text-blue-200 dark:hover:text-blue-300"
                   >
                     Monitoring
-                  </Link>
+                  </Link> */}
                 </nav>
               </div>
               <ThemeSwitcher />
