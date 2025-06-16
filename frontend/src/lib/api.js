@@ -1,6 +1,5 @@
-// frontend\src\lib\api.js
-
 import axios from 'axios';
+import { usePerformance } from './PerformanceContext';
 
 const API_BASE_URL = 'http://localhost:3000';
 const instance = axios.create({
@@ -8,6 +7,32 @@ const instance = axios.create({
   timeout: 5000,
   headers: { 'Content-Type': 'application/json' },
 });
+
+// Request interceptor to measure request time
+instance.interceptors.request.use(
+  (config) => {
+    config.metadata = { startTime: performance.now() };
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// Response interceptor to calculate and store request time
+instance.interceptors.response.use(
+  (response) => {
+    const endTime = performance.now();
+    const requestTime = endTime - response.config.metadata.startTime;
+    // Access PerformanceContext in a way that works with static exports
+    try {
+      const { setRequestTime } = require('./PerformanceContext').usePerformance();
+      setRequestTime(requestTime);
+    } catch (e) {
+      console.warn('PerformanceContext not available for request time');
+    }
+    return response;
+  },
+  (error) => Promise.reject(error)
+);
 
 export const fetchConfig = async (tenantId, configId, path = null) => {
   try {

@@ -1,10 +1,10 @@
-// frontend\src\components\ConfigTree.js
-
 'use client';
 
 import { useEffect, useRef, useMemo, useState } from 'react';
 import * as d3 from 'd3';
 import { debounce } from 'lodash';
+import { toast } from 'react-toastify';
+import { usePerformance } from '@/lib/PerformanceContext';
 
 export default function ConfigTree({ config, metrics, tenantId, configId }) {
   const svgRef = useRef();
@@ -12,20 +12,18 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hasInitialized, setHasInitialized] = useState(false);
-  
+  const { setRenderTime } = usePerformance();
+
   const memoizedConfig = useMemo(() => config, [JSON.stringify(config)]);
   const memoizedMetrics = useMemo(() => metrics, [JSON.stringify(metrics)]);
 
-  // Better validation for tenant and config IDs
   const isValidInput = (tenantId, configId) => {
     return tenantId && configId && 
            /^[A-Za-z0-9]+$/.test(tenantId) && 
            /^[A-Za-z0-9]+$/.test(configId);
   };
 
-  // Convert flat config object to hierarchical structure for D3 tree
   const convertToHierarchy = (configObj, tenantId, configId) => {
-    // Validate inputs first
     if (!isValidInput(tenantId, configId)) {
       return {
         name: `${tenantId || 'Invalid'}:${configId || 'Invalid'}`,
@@ -42,25 +40,22 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       children: []
     };
 
-    // Handle null, undefined, or empty config
     if (!configObj) {
       return {
         ...root,
         isEmpty: true,
-        isLoading: true // This indicates we're still waiting for data
+        isLoading: true
       };
     }
 
-    // Handle empty object but not null (meaning we got a response but no data)
     if (typeof configObj === 'object' && Object.keys(configObj).length === 0) {
       return {
         ...root,
         isEmpty: true,
-        isLoading: false // This indicates we got an empty response
+        isLoading: false
       };
     }
 
-    // Recursively build tree structure
     const buildNode = (obj, parentPath = '', parentNode) => {
       if (!obj || typeof obj !== 'object') return;
 
@@ -74,17 +69,12 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           children: []
         };
 
-        // If the value has a 'value' property, it's a leaf node
         if (value && typeof value === 'object' && value.hasOwnProperty('value')) {
           node.value = value.value;
           node.isLeaf = true;
-        } 
-        // If it's an object without 'value', it's a branch node
-        else if (value && typeof value === 'object') {
+        } else if (value && typeof value === 'object') {
           buildNode(value, currentPath, node);
-        }
-        // If it's a primitive value, treat it as a leaf
-        else {
+        } else {
           node.value = value;
           node.isLeaf = true;
         }
@@ -107,12 +97,10 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
     }
   };
 
-  // Check if a node is cached based on metrics
   const isNodeCached = (nodePath) => {
     return memoizedMetrics.some(metric => metric.path === nodePath);
   };
 
-  // Get node version from metrics
   const getNodeVersion = (nodePath) => {
     const metric = memoizedMetrics.find(m => m.path === nodePath);
     return metric ? metric.metadata.version : null;
@@ -121,6 +109,9 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
   const renderTree = useMemo(
     () => debounce(() => {
       if (!svgRef.current) return;
+
+      console.time('renderTree');
+      const startTime = performance.now();
 
       const svg = d3.select(svgRef.current);
       const width = 1000;
@@ -132,12 +123,10 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .attr('viewBox', `0 0 ${width} ${height}`)
         .style('overflow', 'visible');
 
-      // Clear previous content
       svg.selectAll('*').remove();
 
       const hierarchicalData = convertToHierarchy(memoizedConfig, tenantId, configId);
       
-      // Handle error states
       if (hierarchicalData.isError) {
         const g = svg.append('g').attr('transform', 'translate(50, 50)');
         
@@ -173,10 +162,12 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         
         setError(hierarchicalData.errorType === 'invalid_ids' ? 'Invalid tenant or config ID' : 'Error loading data');
         setIsLoading(false);
+
+        console.timeEnd('renderTree');
+        setRenderTime(performance.now() - startTime);
         return;
       }
 
-      // Handle loading state (when config is null/undefined)
       if (hierarchicalData.isLoading) {
         const g = svg.append('g').attr('transform', 'translate(50, 50)');
         
@@ -195,11 +186,11 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           .text('Please wait while we fetch the data');
         
         setError(null);
-        // Keep isLoading true
+        console.timeEnd('renderTree');
+        setRenderTime(performance.now() - startTime);
         return;
       }
 
-      // Handle empty state (when we got a response but no data)
       if (hierarchicalData.isEmpty && !hierarchicalData.isLoading) {
         const g = svg.append('g').attr('transform', 'translate(50, 50)');
         
@@ -226,10 +217,12 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         
         setError(null);
         setIsLoading(false);
+
+        console.timeEnd('renderTree');
+        setRenderTime(performance.now() - startTime);
         return;
       }
 
-      // If we have actual data, clear error and loading states
       setError(null);
       setIsLoading(false);
 
@@ -239,7 +232,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
 
       const g = svg.selectAll('g.tree').data([0]).join('g').attr('class', 'tree').attr('transform', 'translate(100, 50)');
 
-      // Update links
       const links = g.selectAll('.link')
         .data(root.links(), d => `${d.source.data.path}-${d.target.data.path}`)
         .join('path')
@@ -253,7 +245,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .attr('stroke-width', 2)
         .style('opacity', 0.7);
 
-      // Update nodes
       const nodeGroups = g.selectAll('.node')
         .data(root.descendants(), d => d.data.path)
         .join('g')
@@ -261,16 +252,15 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .attr('transform', d => `translate(${d.x},${d.y})`)
         .style('cursor', 'pointer');
 
-      // Add circles for nodes
       nodeGroups.selectAll('circle')
         .data(d => [d])
         .join('circle')
         .attr('r', d => d.data.isLeaf ? 8 : 12)
         .attr('fill', d => {
-          if (!d.data.path || d.data.path === '/') return '#64748b'; // Root node
-          if (isNodeCached(d.data.path)) return '#3b82f6'; // Cached nodes (blue)
-          if (d.data.isLeaf) return '#10b981'; // Leaf nodes (green)
-          return '#f59e0b'; // Branch nodes (amber)
+          if (!d.data.path || d.data.path === '/') return '#64748b';
+          if (isNodeCached(d.data.path)) return '#3b82f6';
+          if (d.data.isLeaf) return '#10b981';
+          return '#f59e0b';
         })
         .attr('stroke', '#fff')
         .attr('stroke-width', 2)
@@ -293,18 +283,25 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           const version = getNodeVersion(d.data.path);
           const isCached = isNodeCached(d.data.path);
           
-          alert(
-            `Tenant: ${tenantId}\n` +
-            `Config: ${configId}\n` +
-            `Path: ${d.data.path}\n` +
-            `Value: ${d.data.value !== undefined ? d.data.value : 'N/A'}\n` +
-            `Type: ${d.data.isLeaf ? 'Leaf' : 'Branch'}\n` +
-            `Cached: ${isCached ? 'Yes' : 'No'}` +
-            (version ? `\nVersion: ${version}` : '')
+          toast.info(
+            <div>
+              <p><strong>Tenant:</strong> {tenantId}</p>
+              <p><strong>Config:</strong> {configId}</p>
+              <p><strong>Path:</strong> {d.data.path}</p>
+              <p><strong>Value:</strong> {d.data.value !== undefined ? d.data.value : 'N/A'}</p>
+              <p><strong>Type:</strong> {d.data.isLeaf ? 'Leaf' : 'Branch'}</p>
+              <p><strong>Cached:</strong> {isCached ? 'Yes' : 'No'}</p>
+              {version && <p><strong>Version:</strong> {version}</p>}
+            </div>,
+            {
+              position: 'top-center',
+              autoClose: 5000,
+              closeOnClick: true,
+              theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+            }
           );
         });
 
-      // Add node labels
       nodeGroups.selectAll('text.name')
         .data(d => [d])
         .join('text')
@@ -316,7 +313,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .style('fill', document.documentElement.classList.contains('dark') ? '#fff' : '#374151')
         .text(d => d.data.name);
 
-      // Add value labels for leaf nodes
       nodeGroups.selectAll('text.value')
         .data(d => d.data.value !== undefined ? [d] : [])
         .join('text')
@@ -331,12 +327,11 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           String(d.data.value)
         );
 
-      // Add cache indicators
       nodeGroups.selectAll('circle.cache-indicator')
         .data(d => isNodeCached(d.data.path) ? [d] : [])
         .join('circle')
         .attr('class', 'cache-indicator')
-        .attr('r', 4)
+        . attr('r', 4)
         .attr('cx', 15)
         .attr('cy', -15)
         .attr('fill', '#ef4444')
@@ -344,15 +339,20 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .attr('stroke-width', 1)
         .style('opacity', 0.9);
 
-      // Mark as initialized
       setHasInitialized(true);
+
+      console.timeEnd('renderTree');
+      setRenderTime(performance.now() - startTime);
     }, 300),
-    [memoizedConfig, memoizedMetrics, tenantId, configId] // Removed hasInitialized from dependencies
+    [memoizedConfig, memoizedMetrics, tenantId, configId]
   );
 
   const renderDependencyMap = useMemo(
     () => debounce(() => {
       if (!depSvgRef.current || !memoizedMetrics.length) return;
+
+      console.time('renderDependencyMap');
+      const startTime = performance.now();
 
       const svg = d3.select(depSvgRef.current);
       const width = 1000;
@@ -366,7 +366,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
 
       svg.selectAll('*').remove();
 
-      // Create dependency graph data
       const nodes = new Set();
       const links = [];
 
@@ -383,7 +382,11 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       const nodeArray = Array.from(nodes).map(id => ({ id }));
       const linkArray = links;
 
-      if (nodeArray.length === 0) return;
+      if (nodeArray.length === 0) {
+        console.timeEnd('renderDependencyMap');
+        setRenderTime(performance.now() - startTime);
+        return;
+      }
 
       const simulation = d3.forceSimulation(nodeArray)
         .force('link', d3.forceLink(linkArray).id(d => d.id).distance(80))
@@ -393,7 +396,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
 
       const g = svg.append('g');
 
-      // Add links
       const link = g.selectAll('.dep-link')
         .data(linkArray)
         .enter()
@@ -403,7 +405,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .attr('stroke-width', 2)
         .attr('marker-end', 'url(#arrowhead)');
 
-      // Add arrowhead marker
       svg.append('defs').append('marker')
         .attr('id', 'arrowhead')
         .attr('viewBox', '0 -5 10 10')
@@ -416,7 +417,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .attr('d', 'M0,-5L10,0L0,5')
         .attr('fill', '#94a3b8');
 
-      // Add nodes
       const node = g.selectAll('.dep-node')
         .data(nodeArray)
         .enter()
@@ -454,7 +454,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .style('fill', '#fff')
         .text(d => d.id.split('/').pop() || 'root');
 
-      // Add tooltips
       node.append('title')
         .text(d => d.id);
 
@@ -468,22 +467,21 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         node.attr('transform', d => `translate(${d.x},${d.y})`);
       });
 
+      console.timeEnd('renderDependencyMap');
+      setRenderTime(performance.now() - startTime);
     }, 300),
     [memoizedMetrics]
   );
 
-  // Reset loading state when tenantId or configId changes
   useEffect(() => {
     setIsLoading(true);
     setError(null);
     setHasInitialized(false);
   }, [tenantId, configId]);
 
-  // Set a timeout to detect if we're really loading vs no data
   useEffect(() => {
     if (isLoading && hasInitialized) {
       const timer = setTimeout(() => {
-        // If we're still loading after 5 seconds and haven't initialized, show error
         if (!memoizedConfig && isLoading) {
           setError('Failed to load configuration data');
           setIsLoading(false);
@@ -506,7 +504,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
 
   return (
     <div className="space-y-6">
-      {/* Main Tree Visualization */}
       <div className="relative">
         <svg 
           ref={svgRef} 
@@ -537,7 +534,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         )}
       </div>
 
-      {/* Legend */}
       <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg">
         <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Legend:</h4>
         <div className="flex flex-wrap gap-4 text-xs">
@@ -564,7 +560,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         </div>
       </div>
 
-      {/* Status Information */}
       {!isLoading && !error && (
         <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg">
           <div className="text-sm text-blue-700 dark:text-blue-300">
@@ -583,7 +578,6 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         </div>
       )}
 
-      {/* Dependency Map */}
       {memoizedMetrics.length > 0 && (
         <div className="space-y-2">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100">

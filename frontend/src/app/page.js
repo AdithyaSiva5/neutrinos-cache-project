@@ -9,6 +9,8 @@ import EventLog from '@/components/EventLog';
 import UpdateForm from '@/components/UpdateForm';
 import { fetchConfig, fetchMetrics } from '@/lib/api';
 import { useSocket, disconnectSocket } from '@/lib/socket';
+import { usePerformance } from '@/lib/PerformanceContext';
+import { useTenantConfig } from '@/lib/TenantConfigContext';
 import 'react-toastify/dist/ReactToastify.css';
 import { throttle } from 'lodash';
 
@@ -20,16 +22,19 @@ export default function Dashboard() {
   const [config, setConfig] = useState({});
   const [metrics, setMetrics] = useState([]);
   const [events, setEvents] = useState([]);
-  const [tenantId, setTenantId] = useState('T1');
-  const [configId, setConfigId] = useState('C1');
   const [cacheStats, setCacheStats] = useState({ hits: 0, misses: 0 });
+  const { setFetchTime } = usePerformance();
+  const { tenantId, configId, setTenantId, setConfigId } = useTenantConfig();
 
   const updateConfigAndMetrics = useCallback(() => {
     console.time('fetchConfigFrontend');
-    fetchConfig(tenantId, configId) // Remove path parameter to fetch full config
+    const startTime = performance.now();
+
+    fetchConfig(tenantId, configId)
       .then((data) => {
         setConfig(data.config || {});
         console.timeEnd('fetchConfigFrontend');
+        setFetchTime(performance.now() - startTime);
       })
       .catch((err) => toast.error(`Config fetch failed: ${err.message}`));
     fetchMetrics(tenantId, configId)
@@ -38,7 +43,7 @@ export default function Dashboard() {
         setCacheStats(data.cacheStats || { hits: 0, misses: 0 });
       })
       .catch((err) => toast.error(`Metrics fetch failed: ${err.message}`));
-  }, [tenantId, configId]);
+  }, [tenantId, configId, setFetchTime]);
 
   const handleSocketUpdate = useCallback(
     throttle((updates) => {
