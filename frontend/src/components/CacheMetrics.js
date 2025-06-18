@@ -20,7 +20,7 @@ export default function CacheMetrics({ metrics, tenantId, cacheStats }) {
 
   const chartData = useMemo(() => {
     if (!memoizedMetrics || memoizedMetrics.length === 0) {
-      return null; // Return null to handle empty state in JSX
+      return null; 
     }
     return {
       labels: [...memoizedMetrics.map((metric) => metric.path), 'Cache Hits', 'Cache Misses'],
@@ -28,7 +28,12 @@ export default function CacheMetrics({ metrics, tenantId, cacheStats }) {
         {
           label: 'Cache Stats',
           data: [
-            ...memoizedMetrics.map((metric) => parseInt(metric.metadata.version.replace('v', ''))),
+            ...memoizedMetrics.map((metric) => {
+              const version = metric.metadata?.version;
+              return version && typeof version === 'string' && version.startsWith('v')
+                ? parseInt(version.replace('v', ''), 10)
+                : 0; 
+            }),
             memoizedCacheStats.hits,
             memoizedCacheStats.misses,
           ],
@@ -81,8 +86,8 @@ export default function CacheMetrics({ metrics, tenantId, cacheStats }) {
       <ul className="mt-2 space-y-1">
         {memoizedMetrics.map((metric, index) => (
           <li key={index} className="text-sm text-gray-700 dark:text-gray-300">
-            <strong>Path:</strong> {metric.path}, <strong>Version:</strong> {metric.metadata.version}, 
-            <strong>Dependencies:</strong> {metric.metadata.dependencies.join(', ')}
+            <strong>Path:</strong> {metric.path}, <strong>Version:</strong> {metric.metadata?.version || 'N/A'}, 
+            <strong>Dependencies:</strong> {metric.metadata?.dependencies?.join(', ') || 'None'}
           </li>
         ))}
       </ul>
