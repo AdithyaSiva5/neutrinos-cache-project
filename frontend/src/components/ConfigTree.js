@@ -9,6 +9,7 @@ import { usePerformance } from '@/lib/PerformanceContext';
 export default function ConfigTree({ config, metrics, tenantId, configId }) {
   const svgRef = useRef();
   const depSvgRef = useRef();
+  const containerRef = useRef();
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hasInitialized, setHasInitialized] = useState(false);
@@ -108,17 +109,26 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
 
   const renderTree = useMemo(
     () => debounce(() => {
-      if (!svgRef.current) return;
+      if (!svgRef.current || !containerRef.current) return;
 
       console.time('renderTree');
       const startTime = performance.now();
 
+      const container = containerRef.current;
+      const containerWidth = container.clientWidth;
+      const containerHeight = Math.max(600, container.clientHeight);
+      
+      // Dynamic sizing based on container
+      const margin = { top: 50, right: 100, bottom: 50, left: 100 };
+      const width = Math.max(800, containerWidth - 40); // Minimum 800px
+      const height = containerHeight;
+      const innerWidth = width - margin.left - margin.right;
+      const innerHeight = height - margin.top - margin.bottom;
+
       const svg = d3.select(svgRef.current);
-      const width = 1000;
-      const height = 600;
       
       svg
-        .attr('width', '100%')
+        .attr('width', width)
         .attr('height', height)
         .attr('viewBox', `0 0 ${width} ${height}`)
         .style('overflow', 'visible');
@@ -128,7 +138,7 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       const hierarchicalData = convertToHierarchy(memoizedConfig, tenantId, configId);
       
       if (hierarchicalData.isError) {
-        const g = svg.append('g').attr('transform', 'translate(50, 50)');
+        const g = svg.append('g').attr('transform', `translate(${margin.left}, ${margin.top})`);
         
         if (hierarchicalData.errorType === 'invalid_ids') {
           g.append('text')
@@ -169,7 +179,7 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       }
 
       if (hierarchicalData.isLoading) {
-        const g = svg.append('g').attr('transform', 'translate(50, 50)');
+        const g = svg.append('g').attr('transform', `translate(${margin.left}, ${margin.top})`);
         
         g.append('text')
           .attr('x', 0)
@@ -192,7 +202,7 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       }
 
       if (hierarchicalData.isEmpty && !hierarchicalData.isLoading) {
-        const g = svg.append('g').attr('transform', 'translate(50, 50)');
+        const g = svg.append('g').attr('transform', `translate(${margin.left}, ${margin.top})`);
         
         g.append('text')
           .attr('x', 0)
@@ -227,10 +237,31 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       setIsLoading(false);
 
       const root = d3.hierarchy(hierarchicalData);
-      const treeLayout = d3.tree().size([width - 200, height - 100]);
+      
+      // Calculate tree depth for better sizing
+      const treeDepth = root.height;
+      const nodeCount = root.descendants().length;
+      
+      // Adjust tree size based on content
+      const adjustedHeight = Math.max(innerHeight, nodeCount * 30);
+      const adjustedWidth = Math.max(innerWidth, treeDepth * 150);
+      
+      const treeLayout = d3.tree().size([adjustedWidth, adjustedHeight]);
       treeLayout(root);
 
-      const g = svg.selectAll('g.tree').data([0]).join('g').attr('class', 'tree').attr('transform', 'translate(100, 50)');
+      // Create main group with proper transform
+      const g = svg.append('g')
+        .attr('class', 'tree')
+        .attr('transform', `translate(${margin.left}, ${margin.top})`);
+
+      // Add zoom behavior
+      const zoom = d3.zoom()
+        .scaleExtent([0.1, 3])
+        .on('zoom', (event) => {
+          g.attr('transform', `translate(${margin.left + event.transform.x}, ${margin.top + event.transform.y}) scale(${event.transform.k})`);
+        });
+
+      svg.call(zoom);
 
       const links = g.selectAll('.link')
         .data(root.links(), d => `${d.source.data.path}-${d.target.data.path}`)
@@ -302,6 +333,7 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
           );
         });
 
+      // Improved text positioning and wrapping
       nodeGroups.selectAll('text.name')
         .data(d => [d])
         .join('text')
@@ -311,7 +343,40 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .style('font-size', '12px')
         .style('font-weight', '600')
         .style('fill', document.documentElement.classList.contains('dark') ? '#fff' : '#374151')
-        .text(d => d.data.name);
+        .each(function(d) {
+          const text = d3.select(this);
+          const name = d.data.name;
+          
+          // Wrap long text
+          if (name.length > 12) {
+            text.text('');
+            const words = name.split('');
+            let line = '';
+            let lineNumber = 0;
+            const lineHeight = 12;
+            
+            for (let i = 0; i < words.length; i++) {
+              const testLine = line + words[i];
+              if (testLine.length > 12 && line.length > 0) {
+                text.append('tspan')
+                  .attr('x', 0)
+                  .attr('dy', lineNumber === 0 ? 0 : lineHeight)
+                  .text(line);
+                line = words[i];
+                lineNumber++;
+              } else {
+                line = testLine;
+              }
+            }
+            
+            text.append('tspan')
+              .attr('x', 0)
+              .attr('dy', lineNumber === 0 ? 0 : lineHeight)
+              .text(line);
+          } else {
+            text.text(name);
+          }
+        });
 
       nodeGroups.selectAll('text.value')
         .data(d => d.data.value !== undefined ? [d] : [])
@@ -331,7 +396,7 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         .data(d => isNodeCached(d.data.path) ? [d] : [])
         .join('circle')
         .attr('class', 'cache-indicator')
-        . attr('r', 4)
+        .attr('r', 4)
         .attr('cx', 15)
         .attr('cy', -15)
         .attr('fill', '#ef4444')
@@ -354,12 +419,15 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       console.time('renderDependencyMap');
       const startTime = performance.now();
 
+      const container = depSvgRef.current.parentElement;
+      const containerWidth = container.clientWidth;
+      const width = Math.max(800, containerWidth - 40);
+      const height = 400; // Fixed height for dependency map
+
       const svg = d3.select(depSvgRef.current);
-      const width = 1000;
-      const height = 300;
       
       svg
-        .attr('width', '100%')
+        .attr('width', width)
         .attr('height', height)
         .attr('viewBox', `0 0 ${width} ${height}`)
         .style('overflow', 'visible');
@@ -389,12 +457,23 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       }
 
       const simulation = d3.forceSimulation(nodeArray)
-        .force('link', d3.forceLink(linkArray).id(d => d.id).distance(80))
-        .force('charge', d3.forceManyBody().strength(-300))
+        .force('link', d3.forceLink(linkArray).id(d => d.id).distance(100))
+        .force('charge', d3.forceManyBody().strength(-400))
         .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('collision', d3.forceCollide().radius(30));
+        .force('collision', d3.forceCollide().radius(40))
+        .force('x', d3.forceX(width / 2).strength(0.1))
+        .force('y', d3.forceY(height / 2).strength(0.1));
 
       const g = svg.append('g');
+
+      // Add zoom to dependency map
+      const zoom = d3.zoom()
+        .scaleExtent([0.1, 3])
+        .on('zoom', (event) => {
+          g.attr('transform', event.transform);
+        });
+
+      svg.call(zoom);
 
       const link = g.selectAll('.dep-link')
         .data(linkArray)
@@ -408,7 +487,7 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       svg.append('defs').append('marker')
         .attr('id', 'arrowhead')
         .attr('viewBox', '0 -5 10 10')
-        .attr('refX', 15)
+        .attr('refX', 20)
         .attr('refY', 0)
         .attr('markerWidth', 6)
         .attr('markerHeight', 6)
@@ -441,7 +520,7 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
         );
 
       node.append('circle')
-        .attr('r', 12)
+        .attr('r', 15)
         .attr('fill', '#3b82f6')
         .attr('stroke', '#fff')
         .attr('stroke-width', 2);
@@ -449,15 +528,24 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
       node.append('text')
         .attr('dy', 4)
         .attr('text-anchor', 'middle')
-        .style('font-size', '8px')
+        .style('font-size', '10px')
         .style('font-weight', 'bold')
         .style('fill', '#fff')
-        .text(d => d.id.split('/').pop() || 'root');
+        .text(d => {
+          const parts = d.id.split('/');
+          return parts[parts.length - 1] || 'root';
+        });
 
       node.append('title')
         .text(d => d.id);
 
       simulation.on('tick', () => {
+        // Constrain nodes to stay within bounds
+        nodeArray.forEach(d => {
+          d.x = Math.max(30, Math.min(width - 30, d.x));
+          d.y = Math.max(30, Math.min(height - 30, d.y));
+        });
+
         link
           .attr('x1', d => d.source.x)
           .attr('y1', d => d.source.y)
@@ -502,13 +590,29 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
     };
   }, [renderTree, renderDependencyMap]);
 
+  // Handle window resize
+  useEffect(() => {
+    const handleResize = debounce(() => {
+      renderTree();
+      renderDependencyMap();
+    }, 250);
+
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      handleResize.cancel();
+    };
+  }, [renderTree, renderDependencyMap]);
+
   return (
     <div className="space-y-6">
-      <div className="relative">
-        <svg 
-          ref={svgRef} 
-          className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900"
-        />
+      <div className="relative" ref={containerRef}>
+        <div className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900 overflow-hidden">
+          <svg 
+            ref={svgRef} 
+            className="w-full h-full min-h-[600px]"
+          />
+        </div>
         {isLoading && !error && (
           <div className="absolute inset-0 flex items-center justify-center bg-white/80 dark:bg-gray-900/80">
             <div className="text-center">
@@ -558,6 +662,9 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
             <span>Cache Indicator</span>
           </div>
         </div>
+        <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+          💡 Use mouse wheel to zoom, drag to pan the visualization
+        </div>
       </div>
 
       {!isLoading && !error && (
@@ -584,13 +691,15 @@ export default function ConfigTree({ config, metrics, tenantId, configId }) {
             Dependency Map
           </h3>
           <div className="relative">
-            <svg 
-              ref={depSvgRef}
-              className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900"
-            />
+            <div className="w-full border rounded-lg shadow-sm bg-white dark:bg-gray-900 overflow-hidden">
+              <svg 
+                ref={depSvgRef}
+                className="w-full h-[400px]"
+              />
+            </div>
           </div>
           <p className="text-sm text-gray-600 dark:text-gray-400">
-            Drag nodes to rearrange. Arrows show dependency relationships.
+            Drag nodes to rearrange. Use mouse wheel to zoom. Arrows show dependency relationships.
           </p>
         </div>
       )}
