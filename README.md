@@ -11,7 +11,7 @@
 - **Tech Stack Used**:
   - **Frontend**: Next.js, React, D3.js, Chart.js, Socket.IO-client, Tailwind CSS, Axios, Lodash, React-Toastify
   - **Backend**: Node.js, Express.js, PostgreSQL, Redis, Socket.IO, Prometheus (prom-client), express-rate-limit, CORS
-  - **Testing**: Jest, Supertest (backend), k6 (assumed for load testing)
+  - **Testing**: Jest, Supertest (backend)
 - **Key Components**:
   - **Frontend**: ConfigTree (D3.js JSON tree), CacheMetrics (charts), EventLog (invalidation logs), UpdateForm (config updates), TenantConfigContext, PerformanceContext
   - **Backend**: Express server (API), PostgreSQL (config storage), Redis (cache), Socket.IO (real-time updates), Prometheus (metrics)
