@@ -1,9 +1,9 @@
 # Smart Cache Invalidation Challenge – Submission Template
 
-## Participant Information
-- **Team/Participant Name**: Adithya Sivan P S
-- **GitHub Repository**: [Link to Your GitHub Repository Here]
-- **Demo Video (optional)**: [Link to Demonstration Video, if available]
+## Participant Information  
+- **Team/Participant Name**: Adithya Sivan P S  
+- **GitHub Repository**: [https://github.com/AdithyaSiva5/neutri-project](https://github.com/AdithyaSiva5/neutri-project)  
+- **Demo Video (optional)**: [https://drive.google.com/file/d/1iJ7EPoXMLypaglxGJCPSg9w8xxGMf_D9/view?usp=sharing](https://drive.google.com/file/d/1iJ7EPoXMLypaglxGJCPSg9w8xxGMf_D9/view?usp=sharing)
 
 ## Implementation Overview
 
@@ -11,7 +11,7 @@
 - **Tech Stack Used**:
   - **Frontend**: Next.js, React, D3.js, Chart.js, Socket.IO-client, Tailwind CSS, Axios, Lodash, React-Toastify
   - **Backend**: Node.js, Express.js, PostgreSQL, Redis, Socket.IO, Prometheus (prom-client), express-rate-limit, CORS
-  - **Testing**: Jest, Supertest (backend)
+  - **Testing**: Jest
 - **Key Components**:
   - **Frontend**: ConfigTree (D3.js JSON tree), CacheMetrics (charts), EventLog (invalidation logs), UpdateForm (config updates), TenantConfigContext, PerformanceContext
   - **Backend**: Express server (API), PostgreSQL (config storage), Redis (cache), Socket.IO (real-time updates), Prometheus (metrics)
@@ -25,7 +25,7 @@
 ## Performance Test Results
 
 ### Test Configuration
-- **Infrastructure**: Local Docker (backend: localhost:3000, frontend: localhost:3001), k6 on separate container
+- **Infrastructure**: Local Docker (backend: localhost:3000, frontend: localhost:3001)
 - **Service Definitions**:
   | Field          | Example Value    | What It Means            |
   |----------------|------------------|--------------------------|
@@ -99,7 +99,6 @@
 | P99         | 99th percentile          | [TBD]      |
 
 ## Additional Notes
-- **Run Load Tests**: Use k6 to simulate 100/sec, 500/sec loads; I can provide a sample script.
 - **Address Issues**: Frequent Socket.IO disconnections, high latencies (e.g., 109591.72ms) need debugging; provide more context for analysis.
 - **Enhance Submission**: Add real-time updates, D3.js zoom, Redis Pub/Sub optimization for bonus points.
 - **Deadline**: Submit by June 30, 2025.
