@@ -3,7 +3,7 @@
 ## Participant Information  
 - **Team/Participant Name**: Adithya Sivan P S  
 - **GitHub Repository**: [https://github.com/AdithyaSiva5/neutri-project](https://github.com/AdithyaSiva5/neutri-project)  
-- **Demo Video (optional)**: [https://drive.google.com/file/d/1iJ7EPoXMLypaglxGJCPSg9w8xxGMf_D9/view?usp=sharing](https://drive.google.com/file/d/1iJ7EPoXMLypaglxGJCPSg9w8xxGMf_D9/view?usp=sharing)
+- **Demo Video**: [https://drive.google.com/file/d/1iJ7EPoXMLypaglxGJCPSg9w8xxGMf_D9/view?usp=sharing](https://drive.google.com/file/d/1iJ7EPoXMLypaglxGJCPSg9w8xxGMf_D9/view?usp=sharing)
 
 ## Implementation Overview
 
